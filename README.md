@@ -1,4 +1,4 @@
-# Surrogate Ancute Stability Index (ASI) for Early Warning of Resistance Tipping
+# Acute Stability Index (ASI) for Early Warning of Resistance Tipping
 
 **Research code for:** Acute Stability Index + EWS for Antimicrobial Resistance
 **Authors:** Sanath Seetharam
