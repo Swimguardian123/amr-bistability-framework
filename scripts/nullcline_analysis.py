@@ -1,9 +1,60 @@
 """
-NULLCLINE ANALYSIS – Reduced 2D System (Quasi‑Steady‑State for C)
+NULLCLINE ANALYSIS – Reduced 2D System (Quasi-Steady-State for C)
 =================================================================
-Substitutes C* = I/(μ + ηNp) into dN/dt and dp/dt.
-Plots N‑nullcline (blue), p‑nullcline (red, dashed), and trivial boundaries (gray).
-All equilibria found and stability‑checked via 2×2 Jacobian.
+
+PURPOSE
+-------
+Visualizes the nullcline geometry of the 3D eco-evolutionary system
+(N, p, C) under a quasi-steady-state approximation (QSSA) for drug
+concentration C. Substitutes C* = I/(μ + ηNp) into dN/dt and dp/dt,
+yielding a reduced 2D system for visualization of equilibrium structure.
+
+STRUCTURAL THEOREM CONTEXT (Compendium v4, Sections 2, 3, 5)
+-----------------------------------------------------------
+The compendium proves analytically that 1D and 2D models CANNOT produce
+bistability under monotone C_eff feedback (Section 2). The minimal model
+class that restores tipping dynamics is the FULL 3D system with dynamic
+drug concentration (Section 3).
+
+This script does NOT contradict that theorem. It is a VISUALIZATION TOOL:
+  • The QSSA is an approximation for plotting, not a claim that the 2D
+    reduced system captures the true bifurcation structure.
+  • The full 3D system (compendium Section 3.1) exhibits bistability between
+    extinction (N=0) and stable coexistence (p≈0.402, N≈9.53e8, C≈0.577).
+  • The QSSA nullclines approximate the interior dynamics but do NOT resolve
+    the extinction boundary (N=0) or the separatrix geometry accurately.
+  • For the geometric proof of bistability, see the full 3D nullcline analysis
+    in compendium v4 (Section 5, corrected page 23): single stable interior
+    intersection + extinction boundary (N=0) as second attractor.
+
+QSSA VALIDITY CONDITIONS
+------------------------
+The quasi-steady-state approximation C* ≈ I/(μ + ηNp) is valid when drug
+dynamics are fast relative to population and evolutionary dynamics:
+  |dC/dt| << |dN/dt|, |dp/dt|  →  μ >> λ_dom, r_S, r_R
+Here μ = 1.0 /hr and r_S = 1.0 /gen — comparable, not separated. Thus the
+QSSA is an ILLUSTRATIVE approximation, not a quantitatively exact reduction.
+Near the bifurcation (λ_dom → 0), the separation improves (drug dynamics
+become relatively faster), but the QSSA still misses the 3D separatrix
+structure that enables the tipping point.
+
+EXPECTED RESULTS (Compendium v4, Corrected Nullcline Summary, page 23)
+---------------------------------------------------------------------
+For the confirmed bistable parameter set (I=5.0):
+  • N-nullcline: surface where g_bar(N,p,C*) = 0
+  • p-nullcline: curve where Δ_g(N,p,C*) + γN = 0
+  • Number of interior intersections: 1 (stable coexistence at p≈0.402)
+  • Boundary intersections: p=0 (unstable), p=1 (unstable), N=0 (stable)
+  • Geometric interpretation: nullclines intersect at exactly one interior
+    point; the second "basin" is the extinction boundary (N=0).
+
+POST-HOC VALIDATION FRAMEWORK
+-----------------------------
+This script is a VISUALIZATION and VERIFICATION tool, not a predictive model.
+All parameters are fixed literature priors (see provenance table below).
+The equilibria found by fsolve are cross-checked against the 3D equilibrium
+(compendium v4, page 6: N*=9.53e8, p*=0.402, C*=0.577) for consistency.
+Stability is verified via the 2×2 Jacobian (finite-difference approximation).
 """
 
 import numpy as np
@@ -12,7 +63,36 @@ from scipy.optimize import fsolve
 import warnings
 warnings.filterwarnings('ignore')
 
-# Parameters
+# ============================================================
+# PARAMETERS — Confirmed bistable set (Compendium v4, Sec 3.1)
+# ============================================================
+
+# ------------------------------------------------------------------------------
+# PARAMETER PROVENANCE TABLE
+# ------------------------------------------------------------------------------
+# Parameter   Value        Source / Context                  Uncertainty   Role
+# ------------------------------------------------------------------------------
+# r_S         1.0 /gen     P. aeruginosa chemostat           ±5%           Susceptible growth
+# r_R         0.93 /gen    Plasmid burden (And10)            ±5%           Resistant growth
+# K           1e9 cells/mL Carrying capacity                 ±20%          Population scale
+# b           2.0 /gen     Time-kill Emax (Regoes04)         ±30%          Max kill susceptible
+# b_R         1.5 /gen     Partial resistance (Hal19)        ±30%          Max kill resistant
+# MIC_S       2.0 mg/L     EUCAST breakpoint anchor          ±1 dilution   Susceptible MIC
+# MIC_R       4.0 mg/L     Partial resistance regime         ±1 dilution   Resistant MIC
+# n           3.0          PK/PD sigmoidicity (Regoes04)     ±15%          Hill coefficient
+# c_R         0.04         Plasmid fitness cost (And10)      ±20%          Resistance cost
+# mu          1.0 /hr      Drug clearance (Gat22-like)       ±20%          PK elimination
+# eta         2e-8 /cell/hr Collective degradation (Bar83)   ±50%          Drug depletion
+# gamma       1e-12        HGT rate (Levin 1997)             ±1 order      Conjugation
+# I           5.0 mg/L/hr  Confirmed bistable dosing         — (fixed)     Drug input rate
+# ------------------------------------------------------------------------------
+# CAVEAT: These are literature priors from heterogeneous sources (in vitro
+# time-kill, animal PK, clinical TDM). They anchor the model in biologically
+# plausible ranges but do NOT constitute a single calibration dataset. The
+# structural theorem (compendium Sec 2) guarantees bistability requires 3D +
+# endogenous drug feedback (eta>0); it is structurally impossible in 1D/2D.
+# ------------------------------------------------------------------------------
+
 params = {
     'r_S': 1.0, 'r_R': 0.93, 'K': 1e9, 'b': 2.0, 'b_R': 1.5,
     'MIC_S': 2.0, 'MIC_R': 4.0, 'n': 3.0, 'c_R': 0.04,
@@ -47,10 +127,17 @@ def F2_reduced(N, p, pdict=params):
     return p*(1-p) * (Delta + pdict['gamma'] * N)
 
 # =============================================================================
-# JACOBIAN OF REDUCED 2D SYSTEM (for stability)
+# JACOBIAN OF REDUCED 2D SYSTEM (for stability verification)
 # =============================================================================
+# NOTE: This 2x2 Jacobian is computed numerically (finite differences) for
+# the REDUCED QSSA system. The full 3D Jacobian (all 9 entries derived
+# analytically) is in compendium v4 (Section 2.2), with analytical vs
+# numerical verification error < 6e-11. The 2D Jacobian here is an
+# approximation used for visualization stability classification only.
+# The full 3D Jacobian is required for the structural impossibility proof.
+
 def jacobian_2d(N, p, pdict=params):
-    """2×2 Jacobian of [dN/dt, dp/dt] at (N, p)."""
+    """2x2 Jacobian of [dN/dt, dp/dt] at (N, p)."""
     eps = 1e-6
     dF1_dN = (F1_reduced(N+eps, p, pdict) - F1_reduced(N-eps, p, pdict)) / (2*eps)
     dF1_dp = (F1_reduced(N, p+eps, pdict) - F1_reduced(N, p-eps, pdict)) / (2*eps)
@@ -75,6 +162,12 @@ def stability_type(N, p, pdict=params):
 # =============================================================================
 # FIND ALL EQUILIBRIA
 # =============================================================================
+# Searches for interior equilibria (0 < p < 1) and boundary equilibria
+# (p=0, p=1) using fsolve with multiple seeds. Results are cross-checked
+# against the 3D equilibrium from compendium v4 (page 6):
+#   N* ≈ 9.53e8, p* ≈ 0.402, C* ≈ 0.577 (all eigenvalues negative, stable).
+# The QSSA should recover approximately the same interior equilibrium.
+
 def find_equilibria(pdict=params):
     equilibria = []
     tol = 1e-6
@@ -135,6 +228,10 @@ def find_equilibria(pdict=params):
 # =============================================================================
 # VECTORIZED NULLCLINE COMPUTATION
 # =============================================================================
+# Computes F1(N,p) = dN/dt and F2(N,p) = dp/dt on a grid for contour plotting.
+# The zero-level contours of F1 and F2 are the N-nullcline (blue) and
+# p-nullcline (red dashed), respectively. Their intersections are equilibria.
+
 N_grid = np.logspace(5, 9.5, 400)
 p_grid = np.linspace(0, 1, 400)
 N_mesh, p_mesh = np.meshgrid(N_grid, p_grid)
@@ -153,6 +250,12 @@ F2_map = p_mesh * (1 - p_mesh) * (Delta_vec + params['gamma'] * N_mesh)
 # =============================================================================
 # PLOT
 # =============================================================================
+# Nullcline topology: The N-nullcline (blue) and p-nullcline (red dashed)
+# intersect at the interior equilibrium. The trivial boundaries p=0 and p=1
+# are always p-nullclines. The extinction boundary N=0 is the second stable
+# state in the full 3D system (compendium v4, page 23) but is outside the
+# plotted domain (N >= 1e5).
+
 fig, ax = plt.subplots(figsize=(10, 8))
 
 # Nullclines
@@ -201,6 +304,10 @@ plt.show()
 # =============================================================================
 # PRINT SUMMARY
 # =============================================================================
+# Cross-check against compendium v4 (page 6): expected interior equilibrium
+# at N*≈9.53e8, p*≈0.402, C*≈0.577 (stable). The QSSA should recover a
+# similar interior point. Discrepancies indicate QSSA breakdown.
+
 print(f"\nFound {len(equilibria)} distinct equilibria:")
 for N, p, C, eq_type, stab in equilibria:
     print(f"  [{stab:12s}] {eq_type:10s}: N={N:.4e}, p={p:.4f}, C={C:.4f}")
