@@ -53,8 +53,8 @@ This repository contains the complete computational framework for deriving, vali
 ### 1. Installation
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/YOUR_REPO.git
-cd YOUR_REPO
+git clone https://github.com/Swimguardian123/amr-bistability-framework.git
+cd amr-bistability-framework
 pip install -r requirements.txt
 ```
 
