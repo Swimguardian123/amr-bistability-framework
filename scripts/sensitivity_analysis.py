@@ -1,13 +1,49 @@
 """
 COMPREHENSIVE PARAMETER SENSITIVITY ANALYSIS
 =============================================
-Addresses all review concerns:
-  1. Scans FULL I range (no break-on-first-failure)
-  2. Checks STABILITY via Jacobian eigenvalues
-  3. Uses BISECTION for precise critical I
-  4. Includes ALL biologically relevant parameters
-  5. Distinguishes numerical failure from biological absence
-  6. Scale-invariant convergence criteria
+
+PURPOSE
+-------
+Determines how the critical dosing rate I* (the bifurcation point where
+stable coexistence loses stability) depends on each model parameter.
+For each parameter, scans a biologically plausible range and finds the
+largest I at which a stable coexistence equilibrium exists.
+
+BIFURCATION STRUCTURE (Compendium v4, Sections 3, 5, page 23)
+------------------------------------------------------------
+The 3D system exhibits density-dependent bistability between:
+  • Extinction (N=0, stable boundary equilibrium)
+  • Coexistence (N*≈9.53e8, p*≈0.402, C*≈0.577, stable interior equilibrium)
+
+As dosing rate I increases, the coexistence equilibrium shifts and
+eventually loses stability in a transcritical/fold bifurcation where it
+collides with the extinction boundary. The critical I* marks this transition.
+Above I*: only extinction is stable. Below I*: both extinction and coexistence
+are stable (bistable regime).
+
+This script finds I* for each parameter value by:
+  1. Coarse scan across I range (no early break — full coverage)
+  2. Bisection around the transition for precision
+  3. Stability verification via Jacobian eigenvalues (all Re(λ) < 0)
+
+POST-HOC VALIDATION FRAMEWORK
+-----------------------------
+This script performs SENSITIVITY ANALYSIS, not parameter estimation.
+All parameters are fixed literature priors (see provenance table below).
+The sensitivity index S = (ΔI*/I*_base) / (Δp/p_base) quantifies how
+parameter uncertainty propagates to bifurcation location uncertainty.
+This bounds the PRACTICAL IDENTIFIABILITY of the tipping point: parameters
+with large |S| produce wide uncertainty in I* given plausible parameter ranges.
+No fitting, training, or classifier evaluation occurs.
+
+REVIEWER CONCERNS ADDRESSED
+---------------------------
+  1. Full I range scanned (no break-on-first-failure)
+  2. Stability verified via Jacobian eigenvalues (not just residual convergence)
+  3. Bisection for precise critical I (not just grid resolution)
+  4. All biologically relevant parameters included
+  5. Numerical failure distinguished from biological absence (status codes)
+  6. Scale-invariant convergence criteria (residuals normalized by state scales)
 """
 
 import numpy as np
@@ -18,9 +54,34 @@ import warnings
 import time
 warnings.filterwarnings('ignore')
 
-# =============================================================================
-# BASE PARAMETERS
-# =============================================================================
+# ============================================================
+# BASE PARAMETERS — Confirmed bistable set (Compendium v4, Sec 3.1)
+# ============================================================
+
+# ------------------------------------------------------------------------------
+# PARAMETER PROVENANCE TABLE
+# ------------------------------------------------------------------------------
+# Parameter   Value        Source / Context                  Uncertainty   Role
+# ------------------------------------------------------------------------------
+# r_S         1.0 /gen     P. aeruginosa chemostat           ±5%           Susceptible growth
+# r_R         0.93 /gen    Plasmid burden (And10)            ±5%           Resistant growth
+# c_R         0.04         Plasmid fitness cost (And10)      ±20%          Resistance cost
+# K           1e9 cells/mL Carrying capacity                 ±20%          Population scale
+# b           2.0 /gen     Time-kill Emax (Regoes04)         ±30%          Max kill susceptible
+# b_R         1.5 /gen     Partial resistance (Hal19)        ±30%          Max kill resistant
+# MIC_S       2.0 mg/L     EUCAST breakpoint anchor          ±1 dilution   Susceptible MIC
+# MIC_R       4.0 mg/L     Partial resistance regime         ±1 dilution   Resistant MIC
+# n           3.0          PK/PD sigmoidicity (Regoes04)     ±15%          Hill coefficient
+# mu          1.0 /hr      Drug clearance (Gat22-like)       ±20%          PK elimination
+# eta         2e-8 /cell/hr Collective degradation (Bar83)   ±50%          Drug depletion
+# gamma       1e-12        HGT rate (Levin 1997)             ±1 order      Conjugation
+# ------------------------------------------------------------------------------
+# CAVEAT: These are literature priors from heterogeneous sources. The structural
+# theorem (compendium Sec 2) guarantees bistability requires 3D + endogenous
+# drug feedback (eta>0); impossible in 1D/2D. Sensitivity analysis probes how
+# parameter uncertainty affects the bifurcation location I*.
+# ------------------------------------------------------------------------------
+
 BASE_PARAMS = {
     'r_S': 1.0, 'r_R': 0.93, 'K': 1e9, 'b': 2.0, 'b_R': 1.5,
     'MIC_S': 2.0, 'MIC_R': 4.0, 'n': 3.0, 'c_R': 0.04,
@@ -30,6 +91,10 @@ BASE_PARAMS = {
 # =============================================================================
 # MODEL FUNCTIONS
 # =============================================================================
+# All functions derived from first principles (compendium v4, Section 2.1).
+# The 3D ODE system: dN/dt = N·g_bar, dp/dt = p(1-p)(Δ_g + γN),
+# dC/dt = I - μC - ηNpC.
+
 def hill(C, MIC, n):
     if C <= 0:
         return 0.0
@@ -103,6 +168,12 @@ def is_stable(state, I_val, p_dict, tol=-1e-8):
 # =============================================================================
 # EQUILIBRIUM FINDING (ROBUST)
 # =============================================================================
+# Searches for stable coexistence equilibria using multiple seeds.
+# Per compendium v4 (page 23), there is exactly ONE stable interior equilibrium
+# in the bistable regime (N*≈9.53e8, p*≈0.402, C*≈0.577 at I=5.0).
+# The fast path returns on first success since additional stable equilibria
+# are structurally impossible (compendium Sec 2: 1D/2D impossibility theorem).
+
 def has_stable_coexistence(I_val, p_dict, p_tol=1e-4, res_tol=1e-5):
     """
     Return True if a STABLE coexistence equilibrium exists at this I.
@@ -111,14 +182,13 @@ def has_stable_coexistence(I_val, p_dict, p_tol=1e-4, res_tol=1e-5):
     K = p_dict['K']
     C_approx = I_val / p_dict['mu']
     
-    # Diverse seeds covering the expected equilibrium manifold
     seeds = []
     for N_frac in [0.5, 0.7, 0.85, 0.95, 0.99]:
         for p_frac in [0.05, 0.15, 0.35, 0.5, 0.65, 0.85, 0.95]:
             seeds.append([K * N_frac, p_frac, C_approx])
     for N_frac in [0.8, 0.95]:
         for p_frac in [0.25, 0.5, 0.75]:
-            seeds.append([K * N_frac, p_frac, C_approx * 0.3])  # lower C for high eta
+            seeds.append([K * N_frac, p_frac, C_approx * 0.3])
     
     for seed in seeds:
         try:
@@ -131,25 +201,20 @@ def has_stable_coexistence(I_val, p_dict, p_tol=1e-4, res_tol=1e-5):
             
             N, p, C = float(sol[0]), float(np.clip(sol[1], 0, 1)), float(sol[2])
             
-            # Feasibility
             if N <= 0 or C <= 0:
                 continue
             
-            # Scale-invariant residual check
             res = residuals(sol, I_val, p_dict)
             scales = np.array([max(abs(N), 1e5), 1.0, max(abs(C), 1.0)])
             norm_res = np.linalg.norm(res / scales)
             if norm_res > res_tol:
                 continue
             
-            # Coexistence: strictly interior
             if p <= p_tol or p >= 1 - p_tol:
                 continue
             
-            # Stability check
             if is_stable(sol, I_val, p_dict):
                 return True
-                
         except Exception:
             continue
     
@@ -158,35 +223,35 @@ def has_stable_coexistence(I_val, p_dict, p_tol=1e-4, res_tol=1e-5):
 # =============================================================================
 # CRITICAL I FINDER (COARSE SCAN + BISECTION)
 # =============================================================================
+# Finds the largest I at which stable coexistence exists.
+# Above I*: only extinction is stable (monostable).
+# Below I*: both extinction and coexistence are stable (bistable).
+# At I*: transcritical/fold bifurcation where coexistence collides with extinction.
+#
+# Strategy:
+#   1. Coarse scan across full range (no early break — full coverage)
+#   2. If coexistence persists to I_max, extend range
+#   3. Bisection around the transition for precision
+#
+# Returns: (I_crit, status)
+#   status: success | no_coexistence | extends_beyond_range | numerical_issue
+
 def find_critical_I(p_dict, I_min=0.5, I_max=30.0, n_coarse=40, bisection_tol=0.05, max_extend=3):
-    """
-    Find the largest I at which a stable coexistence equilibrium exists.
-    
-    Strategy:
-      1. Coarse scan across full range (no early break)
-      2. If coexistence persists to I_max, extend range
-      3. Bisection around the transition for precision
-    
-    Returns: (I_crit, status)
-      status: 'success', 'no_coexistence', 'extends_beyond_range', 'numerical_issue'
-    """
-    # --- Phase 1: Coarse scan ---
+    # Phase 1: Coarse scan
     I_vals = np.linspace(I_min, I_max, n_coarse)
     flags = []
     for I_val in I_vals:
         flags.append(has_stable_coexistence(I_val, p_dict))
     
-    # --- Phase 2: Handle edge cases ---
+    # Phase 2: Handle edge cases
     if not any(flags):
-        # Coexistence never found. Try lower I just in case.
         I_low_test = np.linspace(0.1, I_min, 10)
         for I_val in I_low_test:
             if has_stable_coexistence(I_val, p_dict):
-                return I_val, 'success'  # exists only below I_min
+                return I_val, 'success'
         return None, 'no_coexistence'
     
     if flags[-1]:
-        # Persists to I_max -- extend
         for ext in range(max_extend):
             I_new_max = I_max * 2
             I_test = np.linspace(I_max, I_new_max, 20)
@@ -199,7 +264,7 @@ def find_critical_I(p_dict, I_min=0.5, I_max=30.0, n_coarse=40, bisection_tol=0.
         if flags[-1]:
             return I_max, 'extends_beyond_range'
     
-    # --- Phase 3: Identify transition bracket ---
+    # Phase 3: Identify transition bracket
     valid_idx = [i for i, f in enumerate(flags) if f]
     last_valid = valid_idx[-1]
     
@@ -209,8 +274,8 @@ def find_critical_I(p_dict, I_min=0.5, I_max=30.0, n_coarse=40, bisection_tol=0.
     I_low = I_vals[last_valid]
     I_high = I_vals[last_valid + 1]
     
-    # --- Phase 4: Bisection ---
-    for _ in range(25):  # 25 iterations -> precision ~ (I_high-I_low)/2^25
+    # Phase 4: Bisection
+    for _ in range(25):
         if I_high - I_low < bisection_tol:
             break
         I_mid = (I_low + I_high) / 2.0
@@ -224,6 +289,11 @@ def find_critical_I(p_dict, I_min=0.5, I_max=30.0, n_coarse=40, bisection_tol=0.
 # =============================================================================
 # SENSITIVITY SWEEP CONFIGURATION
 # =============================================================================
+# Each parameter is swept across a biologically plausible range.
+# Log-scale parameters (MIC_S, MIC_R, K, eta) use geometric spacing.
+# The sensitivity index S = (DeltaI*/I*_base) / (Deltap/p_base) quantifies
+# how parameter uncertainty propagates to bifurcation location uncertainty.
+
 SENSITIVITY_CONFIG = [
     {'name': 'r_S',     'baseline': 1.0,   'range': [0.5, 0.75, 1.0, 1.25, 1.5],       'log': False, 'unit': '1/hr'},
     {'name': 'r_R',     'baseline': 0.93,  'range': [0.5, 0.75, 0.93, 1.0, 1.25],      'log': False, 'unit': '1/hr'},
@@ -239,11 +309,13 @@ SENSITIVITY_CONFIG = [
 ]
 
 # =============================================================================
-# RUN BASELINE
+# MAIN EXECUTION
 # =============================================================================
+
 print("="*80)
 print("COMPREHENSIVE PARAMETER SENSITIVITY ANALYSIS")
 print("="*80)
+
 print("\n[1/2] Computing baseline critical I*...")
 t0 = time.time()
 baseline_crit, baseline_status = find_critical_I(BASE_PARAMS, I_min=0.5, I_max=25.0)
@@ -254,9 +326,6 @@ if baseline_crit is None:
 else:
     print(f"  BASELINE: I* = {baseline_crit:.4f} mg/L/hr  [{baseline_status}]  (took {t_baseline:.1f}s)")
 
-# =============================================================================
-# RUN SWEEPS
-# =============================================================================
 print(f"\n[2/2] Running sensitivity sweeps ({len(SENSITIVITY_CONFIG)} parameters)...")
 print("-"*80)
 
@@ -282,7 +351,6 @@ for cfg in SENSITIVITY_CONFIG:
         if crit is None:
             print(f"  {name}={val:12.4e}  ->  I*=N/A  [{status:22s}]  ({dt:.1f}s)")
         else:
-            # Compute sensitivity index
             if baseline_crit is not None and baseline_crit > 0 and cfg['baseline'] != 0:
                 dI = (crit - baseline_crit) / baseline_crit
                 dp = (val - cfg['baseline']) / cfg['baseline']
@@ -295,17 +363,18 @@ for cfg in SENSITIVITY_CONFIG:
             print(f"  {name}={val:12.4e}  ->  I*={crit:8.3f}  [{status:10s}]  S={sens_idx:+.2f}  ({dt:.1f}s)")
     
     results[name] = {
-        'values': values,
-        'tipping': tips,
-        'statuses': statuses,
-        'log': cfg['log'],
-        'unit': cfg['unit'],
-        'baseline': cfg['baseline']
+        "values": values,
+        "tipping": tips,
+        "statuses": statuses,
+        "log": cfg['log'],
+        "unit": cfg['unit'],
+        "baseline": cfg['baseline']
     }
 
 # =============================================================================
 # PLOTTING
 # =============================================================================
+
 n_params = len(results)
 ncols = 3
 nrows = int(np.ceil(n_params / ncols))
@@ -315,79 +384,77 @@ axes = axes.flatten() if n_params > 1 else [axes]
 
 for idx, (name, data) in enumerate(results.items()):
     ax = axes[idx]
-    vals = np.array(data['values'], dtype=float)
-    tips = np.array(data['tipping'], dtype=float)
-    statuses = data['statuses']
+    vals = np.array(data["values"], dtype=float)
+    tips = np.array(data["tipping"], dtype=float)
+    statuses = data["statuses"]
     
-    # Separate by status for coloring
     x_success = []; y_success = []
     x_extend = []; y_extend = []
     x_fail = []; y_fail = []
     
     for v, t, s in zip(vals, tips, statuses):
-        if s == 'success':
+        if s == "success":
             x_success.append(v); y_success.append(t)
-        elif s == 'extends_beyond_range':
+        elif s == "extends_beyond_range":
             x_extend.append(v); y_extend.append(t)
         else:
             x_fail.append(v); y_fail.append(t)
     
-    # Plot lines connecting successful points
-    valid_mask = np.array([s == 'success' or s == 'extends_beyond_range' for s in statuses])
+    valid_mask = np.array([s == "success" or s == "extends_beyond_range" for s in statuses])
     if np.any(valid_mask):
-        if data['log']:
-            ax.semilogx(vals[valid_mask], tips[valid_mask], '-', color='steelblue', linewidth=2, zorder=1)
+        if data["log"]:
+            ax.semilogx(vals[valid_mask], tips[valid_mask], "-", color="steelblue", linewidth=2, zorder=1)
         else:
-            ax.plot(vals[valid_mask], tips[valid_mask], '-', color='steelblue', linewidth=2, zorder=1)
+            ax.plot(vals[valid_mask], tips[valid_mask], "-", color="steelblue", linewidth=2, zorder=1)
     
-    # Plot markers
     if x_success:
-        ax.scatter(x_success, y_success, c='blue', s=60, zorder=3, label='Converged')
+        ax.scatter(x_success, y_success, c="blue", s=60, zorder=3, label="Converged")
     if x_extend:
-        ax.scatter(x_extend, y_extend, c='green', s=60, marker='^', zorder=3, label='Extends beyond range')
+        ax.scatter(x_extend, y_extend, c="green", s=60, marker="^", zorder=3, label="Extends beyond range")
     if x_fail:
-        ax.scatter(x_fail, y_fail, c='red', s=60, marker='x', zorder=3, label='No coexistence')
+        ax.scatter(x_fail, y_fail, c="red", s=60, marker="x", zorder=3, label="No coexistence")
     
-    # Baseline reference
     if baseline_crit is not None:
-        ax.axhline(y=baseline_crit, color='crimson', linestyle='--', alpha=0.6, 
-                   label=f'Baseline I*={baseline_crit:.2f}')
+        ax.axhline(y=baseline_crit, color="crimson", linestyle="--", alpha=0.6, 
+                   label=f"Baseline I*={baseline_crit:.2f}")
     
-    # Baseline parameter value marker
-    ax.axvline(x=data['baseline'], color='gray', linestyle=':', alpha=0.5)
+    ax.axvline(x=data["baseline"], color="gray", linestyle=":", alpha=0.5)
     
     ax.set_xlabel(f"{name} ({data['unit']})", fontsize=10)
-    ax.set_ylabel('Critical I* (mg/L/hr)', fontsize=10)
-    ax.set_title(f'{name}', fontsize=11, fontweight='bold')
+    ax.set_ylabel("Critical I* (mg/L/hr)", fontsize=10)
+    ax.set_title(f"{name}", fontsize=11, fontweight="bold")
     ax.grid(True, alpha=0.3)
-    ax.legend(fontsize=7, loc='best')
+    ax.legend(fontsize=7, loc="best")
 
-# Hide unused subplots
 for idx in range(n_params, len(axes)):
     axes[idx].set_visible(False)
 
-plt.suptitle('Comprehensive Parameter Sensitivity: Critical Infusion Rate I*', 
-             fontsize=13, fontweight='bold', y=1.01)
+plt.suptitle("Comprehensive Parameter Sensitivity: Critical Infusion Rate I*", 
+             fontsize=13, fontweight="bold", y=1.01)
 plt.tight_layout()
-plt.savefig('comprehensive_sensitivity_analysis.png', dpi=300, bbox_inches='tight')
+plt.savefig("comprehensive_sensitivity_analysis.png", dpi=300, bbox_inches="tight")
 plt.show()
 
 # =============================================================================
 # SUMMARY TABLE
 # =============================================================================
+# The sensitivity index S quantifies how parameter uncertainty propagates to
+# bifurcation location uncertainty. Large |S| indicates the tipping point is
+# highly sensitive to that parameter; small |S| indicates robustness.
+# Parameters with |S| > 2 are considered high-sensitivity; |S| < 0.5 low-sensitivity.
+
 print("\n" + "="*80)
 print("SUMMARY TABLE")
 print("="*80)
-print(f"{'Param':<8} {'Value':<14} {'I*':<10} {'Status':<20} {'SensIdx':<10}")
+print("Param    Value         I*        Status               SensIdx")
 print("-"*80)
 
 for name, data in results.items():
-    for val, tip, status in zip(data['values'], data['tipping'], data['statuses']):
+    for val, tip, status in zip(data["values"], data["tipping"], data["statuses"]):
         tip_str = f"{tip:.3f}" if tip is not None else "N/A"
-        # Sensitivity index
-        if baseline_crit is not None and baseline_crit > 0 and data['baseline'] != 0 and tip is not None:
+        if baseline_crit is not None and baseline_crit > 0 and data["baseline"] != 0 and tip is not None:
             dI = (tip - baseline_crit) / baseline_crit
-            dp = (val - data['baseline']) / data['baseline']
+            dp = (val - data["baseline"]) / data["baseline"]
             if abs(dp) > 1e-10:
                 sens_idx = f"{dI/dp:+.2f}"
             else:
@@ -398,9 +465,9 @@ for name, data in results.items():
 
 print("="*80)
 print("\nLEGEND:")
-print("  * Blue circles  : Stable coexistence found, critical I precisely determined")
+print("  * Blue circles   : Stable coexistence found, critical I precisely determined")
 print("  * Green triangles: Coexistence persists beyond scanned I range (I* > I_max)")
-print("  * Red crosses   : No stable coexistence found in scanned range")
-print("  * SensIdx       : Normalized sensitivity index  (DeltaI*/I*_base) / (Deltap/p_base)")
+print("  * Red crosses    : No stable coexistence found in scanned range")
+print("  * SensIdx        : Normalized sensitivity index  (DeltaI*/I*_base) / (Deltap/p_base)")
 print("  * Dashed red line: Baseline critical I*")
 print("  * Dotted gray line: Baseline parameter value")
