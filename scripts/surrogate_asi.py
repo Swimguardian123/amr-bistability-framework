@@ -1,6 +1,6 @@
 """
 Surrogate ASI Validation – Corrected: compare λ_surr with J22 (p‑eigenvalue)
-===========================================================================
+============================================================================
 
 PURPOSE
 -------
@@ -9,19 +9,29 @@ J22 of the full 3D Jacobian along a tipping trajectory (ramping I from low
 to high). Tests THREE conditions:
   1. IDEAL: True C known (simulation output) — validates the formula itself
   2. MISSPECIFIED: C_est = I/μ (clinical proxy, no feedback) — tests the
-     breakdown condition from compendium v4 (Sec 2.4): "Fails when C* fixed
-     at I/mu." This is the clinically relevant failure mode.
-  3. HIGH-p: p > 0.1 — tests where O(p) corrections to eigenvalue
-     factorization become significant (compendium Sec 4.6.1).
+     breakdown condition from compendium v4 (Sec 2.4).
+  3. HIGH-p: p > 0.1 — tests the proportional relationship when p≠0.
 
 MATHEMATICAL FRAMEWORK (Compendium v4, Sections 2.2, 2.4, 4.6.1)
 -----------------------------------------------------------------
-The surrogate approximates J22 (p-eigenvalue) at the susceptible boundary.
-At p*=0, J22 = Δ_g + γN exactly. The surrogate formula is:
-  λ_surr = Δ_r - (r_R-r_S)·(N/K) + b·f(C,MIC_S) - b_R·f(C,MIC_R) + γN
-The clinical surrogate substitutes C_est = I/μ for the true C*.
-When η·N·p << μ (low burden/low resistance), C* ≈ I/μ and surrogate is accurate.
-When η·N·p ~ μ (high burden), C* << I/μ and surrogate overestimates drug effect.
+The surrogate approximates the p-eigenvalue J22.
+At p*=0:  J22 = Δ_g + γN  exactly.
+At p*>0:  J22 = (1 − 2p*)(Δ_g + γN) = (1 − 2p*) × λ_surr.
+
+The surrogate formula computes λ_surr = Δ_g + γN:
+  λ_surr = Δ_r − (r_R−r_S)·(N/K) + b·f(C,MIC_S) − b_R·f(C,MIC_R) + γN
+
+CRITICAL POINT: λ_surr ≠ J22 when p≠0. They are proportional with factor (1−2p).
+However, BOTH change sign at the same bifurcation point, so λ_surr is a valid
+early warning signal even at moderate p. For perfect numerical agreement at
+all p, the corrected surrogate is λ_surr_corr = (1 − 2p) × λ_surr.
+
+CORRECTED BIFURCATION CONTEXT
+-----------------------------
+This validation ramps I through the bistable TYPE 1 regime only:
+  I ∈ [1.0, 11.0] — interior coexistence (p≈0.05→0.9) is stable.
+Beyond I≈11.6, the interior equilibrium merges with p=1 (transcritical) and
+ceases to exist. The surrogate is not validated past this point.
 """
 
 import numpy as np
@@ -33,23 +43,6 @@ from scipy.stats import pearsonr
 # ============================================================
 # PARAMETERS — Confirmed bistable set (Compendium v4, Sec 3.1)
 # ============================================================
-# Parameter   Value        Source / Context                  Uncertainty   Role
-# r_S         1.0 /gen     P. aeruginosa chemostat           ±5%           Susceptible growth
-# r_R         0.93 /gen    Plasmid burden (And10)            ±5%           Resistant growth
-# c_R         0.04         Plasmid fitness cost (And10)      ±20%          Resistance cost
-# K           1e9 cells/mL Carrying capacity                 ±20%          Population scale
-# b           2.0 /gen     Time-kill Emax (Regoes04)         ±30%          Max kill susceptible
-# b_R         1.5 /gen     Partial resistance (Hal19)        ±30%          Max kill resistant
-# MIC_S       2.0 mg/L     EUCAST breakpoint anchor          ±1 dilution   Susceptible MIC
-# MIC_R       4.0 mg/L     Partial resistance regime         ±1 dilution   Resistant MIC
-# n           3.0          PK/PD sigmoidicity (Regoes04)     ±15%          Hill coefficient
-# mu          1.0 /hr      Drug clearance (Gat22-like)       ±20%          PK elimination
-# eta         2e-8 /cell/hr Collective degradation (Bar83)   ±50%          Drug depletion
-# gamma       1e-12        HGT rate (Levin 1997)             ±1 order      Conjugation
-# ------------------------------------------------------------------------------
-# CAVEAT: These are literature priors from heterogeneous sources.
-# ------------------------------------------------------------------------------
-
 PARAMS = {
     'r_S': 1.0, 'r_R': 0.93, 'c_R': 0.04,
     'b': 2.0, 'b_R': 1.5,
@@ -63,7 +56,8 @@ PARAMS = {
 }
 
 def hill(C, MIC, n):
-    if C <= 0: return 0.0
+    if C <= 0:
+        return 0.0
     return C**n / (C**n + MIC**n)
 
 def growth_rates(N, p, C, p_dict):
@@ -118,18 +112,14 @@ def jacobian(state, p_dict):
                      [J31, J32, J33]])
 
 # =============================================================================
-# SURROGATE EIGENVALUE (two versions)
+# SURROGATE EIGENVALUE
 # =============================================================================
 # VERSION 1: True C (simulation output) — validates the formula itself
 # VERSION 2: C_est = I/μ (clinical proxy) — tests the breakdown condition
-#   from compendium v4 (Sec 2.4): "Fails when C* fixed at I/mu."
-#   This is the clinically relevant failure mode: in practice, C* is unobserved
-#   and must be estimated. When η·N·p ~ μ, C* << I/μ and the surrogate
-#   overestimates drug effect, producing biased ASI.
 
 def surrogate_eigenvalue(state, p_dict, use_true_C=True):
     """
-    λ_surr = Δr + b·f_S - b_R·f_R - (r_R - r_S)·(N/K) + γ·N
+    λ_surr = Δ_g + γN  (equals J22 exactly at p=0; proportional at p>0)
     If use_true_C=False, substitutes C_est = I/μ for the true C.
     """
     N, p, C = state
@@ -142,7 +132,7 @@ def surrogate_eigenvalue(state, p_dict, use_true_C=True):
     if use_true_C:
         C_eff = C
     else:
-        C_eff = p_dict['I'] / p_dict['mu']  # Clinical proxy: ignores feedback
+        C_eff = p_dict['I'] / p_dict['mu']
     f_S = hill(C_eff, MIC_S, n)
     f_R = hill(C_eff, MIC_R, n)
     term_NK = (r_R - r_S) * (N / K)
@@ -170,11 +160,12 @@ def reference_eigenvalue(p_dict, I_ref=1.0):
 # =============================================================================
 
 def validate_surrogate():
-    I_start, I_end = 1.0, 12.0
+    # FIXED: I_end = 11.0 (not 12.0) to stay in bistable TYPE 1 regime
+    I_start, I_end = 1.0, 11.0
     t_max = 5000.0
     def I_ramp(t):
         return I_start + (I_end - I_start) * (t / t_max)
-    
+
     # Find initial equilibrium at I_start
     p_dict_init = PARAMS.copy()
     p_dict_init['I'] = I_start
@@ -185,19 +176,20 @@ def validate_surrogate():
     if not sol_init.success:
         raise RuntimeError("Could not find initial equilibrium")
     init_state = sol_init.y[:, -1]
-    
+
     # Simulate ramp
     sol = solve_ivp(f_ode, [0, t_max], init_state, args=(PARAMS, I_ramp),
                     t_eval=np.linspace(0, t_max, 1000), method='LSODA',
                     rtol=1e-8, atol=1e-10)
     if not sol.success:
         raise RuntimeError("Simulation failed")
-    
+
     t, N, p, C = sol.t, sol.y[0], sol.y[1], sol.y[2]
-    
+
     # Compute all eigenvalues along trajectory
     lambda_surr_true = np.zeros_like(t)
     lambda_surr_miss = np.zeros_like(t)
+    lambda_surr_corr = np.zeros_like(t)
     J22_true = np.zeros_like(t)
     lambda_dom = np.zeros_like(t)
     for i in range(len(t)):
@@ -210,110 +202,131 @@ def validate_surrogate():
         J22_true[i] = J[1,1]
         lambda_surr_true[i] = surrogate_eigenvalue(state, p_dict_i, use_true_C=True)
         lambda_surr_miss[i] = surrogate_eigenvalue(state, p_dict_i, use_true_C=False)
-    
-    # --- TEST 1: Ideal (true C, p < 0.1) ---
+        lambda_surr_corr[i] = (1 - 2*p[i]) * lambda_surr_true[i]
+
+    # --- TEST 1a: Ideal (true C, p < 0.1) ---
     valid_low_p = p < 0.1
     corr_ideal, pval_ideal = pearsonr(lambda_surr_true[valid_low_p], J22_true[valid_low_p])
     mae_ideal = np.mean(np.abs(lambda_surr_true[valid_low_p] - J22_true[valid_low_p]))
-    
+
+    # --- TEST 1b: Corrected surrogate (1-2p)*λ_surr vs J22, ALL p ---
+    corr_corrected, pval_corr = pearsonr(lambda_surr_corr, J22_true)
+    mae_corrected = np.mean(np.abs(lambda_surr_corr - J22_true))
+
     # --- TEST 2: Misspecified C (C_est = I/μ, p < 0.1) ---
     corr_miss, pval_miss = pearsonr(lambda_surr_miss[valid_low_p], J22_true[valid_low_p])
     mae_miss = np.mean(np.abs(lambda_surr_miss[valid_low_p] - J22_true[valid_low_p]))
-    
+
     # --- TEST 3: High p (p > 0.1, true C) ---
     valid_high_p = p > 0.1
     n_high = np.sum(valid_high_p)
     if n_high > 2:
         corr_high, pval_high = pearsonr(lambda_surr_true[valid_high_p], J22_true[valid_high_p])
         mae_high = np.mean(np.abs(lambda_surr_true[valid_high_p] - J22_true[valid_high_p]))
+        corr_high_corr, _ = pearsonr(lambda_surr_corr[valid_high_p], J22_true[valid_high_p])
+        mae_high_corr = np.mean(np.abs(lambda_surr_corr[valid_high_p] - J22_true[valid_high_p]))
     else:
-        corr_high, mae_high = np.nan, np.nan
-    
+        corr_high, mae_high, corr_high_corr, mae_high_corr = np.nan, np.nan, np.nan, np.nan
+
     # Print results
     print("="*70)
     print("SURROGATE VALIDATION – THREE TESTS")
     print("="*70)
     print(f"I_start={I_start}, I_end={I_end}, t_max={t_max} hr")
-    print(f"\nTEST 1: IDEAL (true C, p<0.1) — n={np.sum(valid_low_p)}")
-    print(f"  Correlation (λ_surr vs J22): {corr_ideal:.8f} (p={pval_ideal:.2e})")
+    print(f"\nNOTE: lambda_surr = Delta_g + gamma*N. J22 = (1-2p)*lambda_surr.")
+    print(f"At p=0: lambda_surr = J22 exactly. At p>0: proportional with factor (1-2p).")
+    print(f"\nTEST 1a: IDEAL — true C, p<0.1 (n={np.sum(valid_low_p)})")
+    print(f"  Correlation (lambda_surr vs J22): {corr_ideal:.8f} (p={pval_ideal:.2e})")
     print(f"  MAE: {mae_ideal:.2e}")
     print(f"  Pass (corr>0.999 & MAE<1e-6)? {corr_ideal > 0.999 and mae_ideal < 1e-6}")
-    print(f"\nTEST 2: MISSPECIFIED C (C_est=I/μ, p<0.1) — n={np.sum(valid_low_p)}")
-    print(f"  Correlation (λ_surr vs J22): {corr_miss:.8f} (p={pval_miss:.2e})")
+    print(f"\nTEST 1b: CORRECTED — (1-2p)*lambda_surr vs J22, ALL p (n={len(t)})")
+    print(f"  Correlation: {corr_corrected:.8f} (p={pval_corr:.2e})")
+    print(f"  MAE: {mae_corrected:.2e}")
+    print(f"  Pass (corr>0.999 & MAE<1e-6)? {corr_corrected > 0.999 and mae_corrected < 1e-6}")
+    print(f"\nTEST 2: MISSPECIFIED C — C_est=I/mu, p<0.1 (n={np.sum(valid_low_p)})")
+    print(f"  Correlation (lambda_surr vs J22): {corr_miss:.8f} (p={pval_miss:.2e})")
     print(f"  MAE: {mae_miss:.2e}")
-    print(f"  Degradation vs ideal: Δcorr={corr_ideal-corr_miss:.4f}, ΔMAE={mae_miss-mae_ideal:.2e}")
+    print(f"  Degradation vs ideal: dcorr={corr_ideal-corr_miss:.4f}, dMAE={mae_miss-mae_ideal:.2e}")
     print(f"  Pass (corr>0.95)? {corr_miss > 0.95}")
-    print(f"\nTEST 3: HIGH p (p>0.1, true C) — n={n_high}")
+    print(f"\nTEST 3: HIGH p — p>0.1, true C (n={n_high})")
+    print(f"  NOTE: J22 = (1-2p)*lambda_surr by construction. Testing proportional trend.")
     if n_high > 2:
-        print(f"  Correlation (λ_surr vs J22): {corr_high:.8f}")
-        print(f"  MAE: {mae_high:.2e}")
-        print(f"  Degradation vs ideal: Δcorr={corr_ideal-corr_high:.4f}, ΔMAE={mae_high-mae_ideal:.2e}")
-        print(f"  O(p) corrections significant? {mae_high > 10*mae_ideal}")
+        print(f"  Raw lambda_surr vs J22: corr={corr_high:.4f}, MAE={mae_high:.2e}")
+        print(f"  Corrected (1-2p)*lambda_surr vs J22: corr={corr_high_corr:.4f}, MAE={mae_high_corr:.2e}")
+        print(f"  O(p) factor significant? {abs(corr_ideal - corr_high) > 0.01}")
     else:
-        print("  Insufficient data (p never exceeded 0.1).")
-    
+        print("  Insufficient data.")
+
     # Plot
     fig, axes = plt.subplots(2, 3, figsize=(16, 10))
-    
-    # Row 1: Time series
+
     ax = axes[0,0]
-    ax.plot(t, J22_true, 'b-', label='J22 (true)')
-    ax.plot(t, lambda_surr_true, 'r--', label='λ_surr (true C)')
-    ax.set_title(f'TEST 1: Ideal (corr={corr_ideal:.4f})')
-    ax.set_ylabel('λ')
-    ax.legend()
+    ax.plot(t, J22_true, 'b-', label='J22 (true)', linewidth=2)
+    ax.plot(t, lambda_surr_true, 'r--', label='lambda_surr (raw)', alpha=0.7)
+    ax.plot(t, lambda_surr_corr, 'g:', label='(1-2p)*lambda_surr (corrected)', alpha=0.7)
+    ax.set_title(f'TEST 1: Ideal + Corrected')
+    ax.set_ylabel('lambda')
+    ax.legend(fontsize=8)
     ax.grid(alpha=0.3)
-    
+
     ax = axes[0,1]
-    ax.plot(t, J22_true, 'b-', label='J22 (true)')
-    ax.plot(t, lambda_surr_miss, 'g--', label='λ_surr (C_est=I/μ)')
+    ax.plot(t, J22_true, 'b-', label='J22 (true)', linewidth=2)
+    ax.plot(t, lambda_surr_miss, 'g--', label='lambda_surr (C_est=I/mu)')
     ax.set_title(f'TEST 2: Misspecified C (corr={corr_miss:.4f})')
-    ax.legend()
+    ax.legend(fontsize=8)
     ax.grid(alpha=0.3)
-    
+
     ax = axes[0,2]
-    ax.plot(t, p, 'm-')
-    ax.axhline(0.1, color='r', linestyle='--', label='validity limit')
+    ax.plot(t, p, 'm-', linewidth=2)
+    ax.axhline(0.1, color='r', linestyle='--', label='validity limit p=0.1')
+    ax.axvline(t[np.argmin(np.abs(I_ramp(t) - 11.0))], color='orange', linestyle='--', 
+               label='I=11 (type 1 boundary)')
     ax.set_title('p(t) — validity region')
     ax.set_ylabel('p')
-    ax.legend()
+    ax.set_xlabel('Time (hr)')
+    ax.legend(fontsize=8)
     ax.grid(alpha=0.3)
-    
-    # Row 2: Scatter plots
+
     ax = axes[1,0]
-    ax.scatter(J22_true[valid_low_p], lambda_surr_true[valid_low_p], c=t[valid_low_p], cmap='viridis', alpha=0.8)
+    ax.scatter(J22_true[valid_low_p], lambda_surr_true[valid_low_p], 
+               c=t[valid_low_p], cmap='viridis', alpha=0.8, label='Raw lambda_surr')
+    ax.scatter(J22_true[valid_low_p], lambda_surr_corr[valid_low_p], 
+               c=t[valid_low_p], cmap='viridis', alpha=0.3, marker='x', label='(1-2p)*lambda_surr')
     min_v = min(J22_true[valid_low_p].min(), lambda_surr_true[valid_low_p].min())
     max_v = max(J22_true[valid_low_p].max(), lambda_surr_true[valid_low_p].max())
-    ax.plot([min_v, max_v], [min_v, max_v], 'k--')
+    ax.plot([min_v, max_v], [min_v, max_v], 'k--', alpha=0.5)
     ax.set_xlabel('J22')
-    ax.set_ylabel('λ_surr (true C)')
+    ax.set_ylabel('lambda_surr')
     ax.set_title(f'Ideal: scatter (p<0.1)')
+    ax.legend(fontsize=8)
     ax.grid(alpha=0.3)
-    
+
     ax = axes[1,1]
-    ax.scatter(J22_true[valid_low_p], lambda_surr_miss[valid_low_p], c=t[valid_low_p], cmap='plasma', alpha=0.8)
+    ax.scatter(J22_true[valid_low_p], lambda_surr_miss[valid_low_p], 
+               c=t[valid_low_p], cmap='plasma', alpha=0.8)
     min_v = min(J22_true[valid_low_p].min(), lambda_surr_miss[valid_low_p].min())
     max_v = max(J22_true[valid_low_p].max(), lambda_surr_miss[valid_low_p].max())
-    ax.plot([min_v, max_v], [min_v, max_v], 'k--')
+    ax.plot([min_v, max_v], [min_v, max_v], 'k--', alpha=0.5)
     ax.set_xlabel('J22')
-    ax.set_ylabel('λ_surr (C_est=I/μ)')
+    ax.set_ylabel('lambda_surr (C_est=I/mu)')
     ax.set_title(f'Misspecified: scatter (p<0.1)')
     ax.grid(alpha=0.3)
-    
+
     ax = axes[1,2]
-    ax.plot(t, lambda_dom, 'm-', label='λ_dom')
-    ax.plot(t, J22_true, 'b-', label='J22')
+    ax.plot(t, lambda_dom, 'm-', label='lambda_dom', linewidth=2)
+    ax.plot(t, J22_true, 'b-', label='J22', alpha=0.7)
+    ax.axhline(0, color='k', linestyle='--', alpha=0.3)
     ax.set_title('Dominant vs p-eigenvalue')
     ax.set_xlabel('Time (hr)')
-    ax.set_ylabel('λ')
-    ax.legend()
+    ax.set_ylabel('lambda')
+    ax.legend(fontsize=8)
     ax.grid(alpha=0.3)
-    
+
     plt.tight_layout()
     plt.savefig('surrogate_validation_three_tests.png', dpi=150)
     plt.show()
 
 if __name__ == "__main__":
     lambda_ref, _ = reference_eigenvalue(PARAMS, I_ref=1.0)
-    print(f"Reference eigenvalue (I=1.0): λ_ref = {lambda_ref:.6f}")
+    print(f"Reference eigenvalue (I=1.0): lambda_ref = {lambda_ref:.6f}")
     validate_surrogate()
