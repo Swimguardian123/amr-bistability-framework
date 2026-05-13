@@ -11,7 +11,8 @@ This script:
 - Includes Leave-One-Patient-Out Cross-Validation (LOPOCV)
 - Analyzes longitudinal trends for patients with serial isolates
 - Compares Single vs Mixed strain infections
-- Sensitivity analysis over assumed drug concentration C
+- Sensitivity analysis over assumed drug concentration C (ROBUSTNESS CHECK ONLY;
+  C is FIXED A PRIORI from pharmacokinetic literature to prevent data leakage)
 
 Author: Generated for research use
 """
@@ -59,10 +60,10 @@ print("=" * 70)
 FILE_PATH = "/Users/sseetharam28/Desktop/amr-bistability-framework/data/Source_Data_Mixed_Strain.xlsx"
 SHEET_NAME = "Figure 1, Figure 3"
 
-df = pd.read_excel(FILE_PATH, sheet_name=SHEET_NAME)
+df = pd.read_excel(FILE_PATH, sheet_name=SHEET_NAME, header=0)
 
-# Remove duplicate header row if present (check first two rows)
-if df.iloc[0].astype(str).str.contains('Isolate name').any() and df.iloc[1].astype(str).str.contains('Isolate name').any():
+# Remove duplicate header row if accidentally present as a data row
+if 'Isolate name' in str(df.iloc[0].get(df.columns[0], '')):
     df = df.iloc[1:].reset_index(drop=True)
     print("Removed duplicate header row.")
 
@@ -111,7 +112,6 @@ print(f"Strain types: {df['strain_type'].value_counts().to_dict()}")
 print(f"Samples per patient: min={df.groupby('patient_id')['sample'].nunique().min()}, "
       f"max={df.groupby('patient_id')['sample'].nunique().max()}")
 
-# ============================================================
 # ============================================================
 # 2. MODEL PARAMETERS (Organism-specific for P. aeruginosa)
 # ============================================================
@@ -170,7 +170,8 @@ C_ref = 0.5 / mu    # Reference drug concentration for lambda_ref (I/mu baseline
 # captures protection pharmacodynamics.
 b_R_empirical = 2.0
 
-# High-density infection assumption
+# High-density infection assumption (retained for documentation; not used in 
+# surrogate ASI per compendium Section 2.4 / 4.6.1)
 N_over_K = 0.95
 N_fixed = N_over_K * K
 
@@ -192,15 +193,15 @@ print(f"Reference MIC_R = {MIC_R_ref}")
 #
 # where Δ_g = g_R - g_S = (r_R - r_S)(1 - N/K) - c_R - [b_R·f(C,MIC_R) - b·f(C,MIC_S)]
 #
-# With γN ≈ 0 (negligible: γ=1e-12, N~1e9 → γN~1e-3 << Δ_g~O(1)),
-# and substituting Δ_r = (r_R - r_S) - c_R, this becomes:
+# The compendium surrogate formula (Section 2.4, page 10) collapses the density
+# dependence into the net cost parameter Δ_r = (r_R - r_S) - c_R, giving:
 #
-#   λ = Δ_r - (r_R - r_S)·(N/K) + b·f(C, MIC_S) - b_R·f(C, MIC_R)
+#   λ = Δ_r + b·f(C, MIC_S) - b_R·f(C, MIC_R)
 #
-# This is NOT a heuristic composite score. It is the exact LINEARIZED INVASION
-# FITNESS of resistance at the susceptible boundary, derived from first-principles
-# ODE dynamics. The surrogate substitutes observed MIC for the mechanistic MIC
-# parameter and assumes a fixed N/K ratio (high-density limit).
+# This is the exact LINEARIZED INVASION FITNESS of resistance at the susceptible
+# boundary, derived from first-principles ODE dynamics. The surrogate substitutes
+# observed MIC for the mechanistic MIC parameter and assumes a fixed N/K ratio
+# (high-density limit), with the density effect absorbed into Δ_r.
 # ------------------------------------------------------------------------------
 def hill(C, MIC):
     """
@@ -228,6 +229,7 @@ def hill(C, MIC):
     if C <= 0 or MIC <= 0:
         return 0.0
     return C**n / (C**n + MIC**n)
+
 # Reference lambda at low drug (C_ref = 0.5)
 # Evaluated at the susceptible boundary reference state (N_ref, p→0, C_ref=I/μ),
 # representing the null-selection baseline where invasion fitness is determined
@@ -237,16 +239,20 @@ def hill(C, MIC):
 # ASI = 1 means invasion fitness equals the reference magnitude;
 # ASI → 0 means the system approaches the bifurcation where resistance invasion
 # is neutral (λ = 0), i.e., the tipping point.
+#
+# CORRECTED (Issues #2, #5): Removed -(r_R - r_S)*N_over_K term to align with
+# compendium Section 2.4 / 4.6.1 surrogate formula.
 lambda_ref = (Delta_r
               + b * hill(C_ref, MIC_S_mero)
               - b_R_empirical * hill(C_ref, MIC_R_ref)
-              - (r_R - r_S) * N_over_K
               + gamma * N_fixed)
 
 ASI_denom = abs(lambda_ref)
 print(f"\nReference λ_ref = {lambda_ref:.6f}")
 print(f"ASI denominator = {ASI_denom:.6f}")
 print(f"gamma*N = {gamma * N_fixed:.6f}")
+
+
 def surrogate_asi(mic, c_drug, drug='meropenem'):
     """
     Compute surrogate Antibiotic Selection Index (ASI).
@@ -257,7 +263,7 @@ def surrogate_asi(mic, c_drug, drug='meropenem'):
     eigenvalue at p*→0) from the 3D eco-evolutionary Jacobian (Compendium
     Sections 2.2, 4.6.1):
 
-        λ = Δ_r - (r_R - r_S)·(N/K) + b·f(C, MIC_S) - b_R·f(C, MIC_R)
+        λ = Δ_r + b·f(C, MIC_S) - b_R·f(C, MIC_R)
 
     where f(C, MIC) = C^n / (C^n + MIC^n) is the Hill pharmacodynamic function,
     and Δ_r = (r_R - r_S) - c_R is the net fitness cost of resistance.
@@ -279,7 +285,6 @@ def surrogate_asi(mic, c_drug, drug='meropenem'):
     mechanistic parameter, following standard PK/PD surrogate modeling
     (Regoes 2004). The approximation error is bounded by:
       - Sensitivity analysis over assumed C (Section 3)
-      - Cross-drug validation (Section 12)
       - Comparison to binary phenotypes (Sections 4–8)
 
     Parameters
@@ -306,10 +311,11 @@ def surrogate_asi(mic, c_drug, drug='meropenem'):
     else:
         MIC_S = MIC_S_cefe
 
+    # CORRECTED (Issues #2, #5): Removed -(r_R - r_S)*N_over_K term to align
+    # exactly with compendium Section 2.4 / 4.6.1 surrogate formula.
     lam = (Delta_r
            + b * hill(c_drug, MIC_S)
            - b_R_empirical * hill(c_drug, mic)
-           - (r_R - r_S) * N_over_K
            + gamma * N_fixed)
 
     if lam >= 0:
@@ -351,6 +357,7 @@ print("=" * 70)
 
 print("Structural identifiability: MOOT (parameters are fixed priors, not estimated).")
 print("Practical identifiability: bounded by sensitivity analysis over assumed C.")
+
 # ============================================================
 # 3. SENSITIVITY ANALYSIS OF ASSUMED DRUG CONCENTRATION C
 # ============================================================
@@ -364,15 +371,17 @@ print("=" * 70)
 # dC/dt = I - μ·C - η·N·p·C. In the surrogate ASI, C* is UNOBSERVED.
 # We assume a fixed in vivo concentration C based on typical trough levels
 # for meropenem infusion (5–25 mg/L). This is the primary source of
-# SURROGATE APPROXIMATION ERROR. The sensitivity analysis below quantifies
-# how ASI discriminative performance (effect size, AUC) varies across
-# biologically plausible C values, bounding the practical identifiability
-# of the latent state. Optimal C is selected by maximum AUC, but the
-# robustness of ranking across the range is the key diagnostic.# 3. SENSITIVITY ANALYSIS OF ASSUMED DRUG CONCENTRATION C
-# ============================================================
-print("\n" + "=" * 70)
-print("SENSITIVITY ANALYSIS: ASSUMED DRUG CONCENTRATION (C)")
-print("=" * 70)
+# SURROGATE APPROXIMATION ERROR.
+#
+# CRITICAL FIX (Issue #1): C is FIXED A PRIORI from clinical pharmacokinetics.
+# We do NOT optimize C on the full dataset. The sensitivity analysis below
+# quantifies robustness across biologically plausible values but does NOT
+# determine the operating concentration. C_fixed = 10 mg/L is chosen as the
+# mid-range representative trough for meropenem continuous infusion
+# (Gatti et al. 2022; typical reported troughs 5–25 mg/L).
+# ---------------------------------------------------------
+
+C_fixed = 10.0  # mg/L — literature-based meropenem trough, fixed a priori
 
 C_range = [5, 8, 10, 12, 15, 20, 25]
 results_sens = []
@@ -414,14 +423,12 @@ for C in C_range:
 df_sens = pd.DataFrame(results_sens)
 print(df_sens.round(4).to_string(index=False))
 
-# Choose optimal C based on AUC and effect size
-best_idx = df_sens['AUC'].idxmax()
-C_fixed = df_sens.loc[best_idx, 'C (mg/L)']
-print(f"\nOptimal C selected: {C_fixed} mg/L (AUC = {df_sens.loc[best_idx, 'AUC']:.3f})")
+print(f"\nC_fixed = {C_fixed} mg/L (fixed a priori from PK literature; NOT optimized on data).")
+print(f"Sensitivity analysis shows robustness across biologically plausible range.")
 
-# Compute final ASI with chosen C
+# Compute final ASI with the LITERATURE-FIXED C (no data leakage)
 df['ASI_mem'] = df['mic_mem'].apply(lambda x: surrogate_asi(x, C_fixed, 'meropenem'))
-df['ASI_caz'] = df['mic_caz'].apply(lambda x: surrogate_asi(x, C_fixed * 2, 'ceftazidime'))
+
 # ============================================================
 # 4. DESCRIPTIVE STATISTICS & EFFECT SIZE (MEROPENEM)
 # ============================================================
@@ -440,12 +447,7 @@ print("=" * 70)
 #   "Does the mechanistic predictor of dynamical stability also separate
 #    resistant and susceptible populations?"
 # They do NOT reframe the model as a classifier. The model predicts dynamical
-# selection pressure; classification performance is a secondary validation.# ============================================================
-# 4. DESCRIPTIVE STATISTICS & EFFECT SIZE (MEROPENEM)
-# ============================================================
-print("\n" + "=" * 70)
-print("DESCRIPTIVE STATISTICS: MEROPENEM ASI vs RESISTANCE")
-print("=" * 70)
+# selection pressure; classification performance is a secondary validation.
 
 # Primary validation: n_mem (meropenem resistance binary)
 non_res_asi = df[df['n_mem'] == 0]['ASI_mem'].dropna().values
@@ -567,6 +569,7 @@ def perm_test_two_tailed(x, y, n_perm=10000, seed=42):
 
 perm_p = perm_test_two_tailed(non_res_asi, res_asi)
 print(f"Two-tailed permutation test p-value (10,000 permutations): {perm_p:.6f}")
+
 # ============================================================
 # 8. ROC CURVE AND AUC
 # ============================================================
@@ -585,12 +588,7 @@ print("=" * 70)
 # performance against existing surrogate metrics used in antimicrobial
 # stewardship. AUC > 0.5 demonstrates that the dynamical predictor
 # captures genuine biological signal; AUC ≈ 0.5 would indicate the
-# surrogate is no better than random despite its mechanistic derivation.# ============================================================
-# 8. ROC CURVE AND AUC
-# ============================================================
-print("\n" + "=" * 70)
-print("ROC CURVE AND AUC")
-print("=" * 70)
+# surrogate is no better than random despite its mechanistic derivation.
 
 y_true = df['n_mem'].astype(int).values
 y_score = -df['ASI_mem'].values  # higher = more resistant
@@ -778,18 +776,11 @@ print("SPEARMAN CORRELATION")
 print("=" * 70)
 
 df['log2MIC_mem'] = np.log2(df['mic_mem'])
-df['log2MIC_caz'] = np.log2(df['mic_caz'])
 
 # Meropenem
 corr_mem, p_corr_mem = spearmanr(df['ASI_mem'].dropna(), 
                                   df.loc[df['ASI_mem'].notna(), 'log2MIC_mem'])
 print(f"ASI vs log2(MIC_meropenem): r = {corr_mem:.3f}, p = {p_corr_mem:.2e}")
-
-# Ceftazidime (where available)
-valid_caz = df[['ASI_caz', 'log2MIC_caz']].dropna()
-if len(valid_caz) > 10:
-    corr_caz, p_corr_caz = spearmanr(valid_caz['ASI_caz'], valid_caz['log2MIC_caz'])
-    print(f"ASI vs log2(MIC_ceftazidime): r = {corr_caz:.3f}, p = {p_corr_caz:.2e}")
 
 # ============================================================
 # 10. SINGLE vs MIXED STRAIN COMPARISON
@@ -920,43 +911,18 @@ if len(serial_patients) > 0:
                   f"(n={len(sub)})")
 
 # ============================================================
-# 12. CROSS-DRUG ANALYSIS (Ceftazidime)
+# 12. CROSS-DRUG ANALYSIS (Ceftazidime) — REMOVED
 # ============================================================
 print("\n" + "=" * 70)
-print("CROSS-DRUG ANALYSIS: CEFTAZIDIME")
+print("CROSS-DRUG ANALYSIS: CEFTAZIDIME — REMOVED")
 print("=" * 70)
-
-# Use n_caz as resistance indicator
-df['is_res_caz'] = df['n_caz'].astype(int)
-
-non_res_caz = df[df['is_res_caz'] == 0]['ASI_caz'].dropna()
-res_caz = df[df['is_res_caz'] == 1]['ASI_caz'].dropna()
-
-if len(non_res_caz) > 1 and len(res_caz) > 1:
-    stat_c, p_c = mannwhitneyu(non_res_caz, res_caz, alternative='two-sided')
-    mean_diff_c = res_caz.mean() - non_res_caz.mean()
-    pooled_std_c = np.sqrt(((len(non_res_caz)-1)*non_res_caz.var() + 
-                            (len(res_caz)-1)*res_caz.var()) / 
-                           (len(non_res_caz)+len(res_caz)-2))
-    cohens_d_c = mean_diff_c / pooled_std_c if pooled_std_c > 0 else np.nan
-
-    # ROC for ceftazidime
-    y_true_caz = df['is_res_caz'].values
-    y_score_caz = -df['ASI_caz'].values
-    valid_c = ~np.isnan(y_score_caz)
-    if valid_c.sum() > 0 and len(np.unique(y_true_caz[valid_c])) > 1:
-        fpr_c, tpr_c, _ = roc_curve(y_true_caz[valid_c], y_score_caz[valid_c])
-        auc_caz = auc(fpr_c, tpr_c)
-    else:
-        auc_caz = np.nan
-
-    print(f"Ceftazidime ASI (C = {C_fixed*2} mg/L):")
-    print(f"  Non-resistant (n={len(non_res_caz)}): mean = {non_res_caz.mean():.4f}")
-    print(f"  Resistant (n={len(res_caz)}): mean = {res_caz.mean():.4f}")
-    print(f"  Mann-Whitney p = {p_c:.2e}, Cohen's d = {cohens_d_c:.3f}")
-    print(f"  ROC AUC = {auc_caz:.3f}")
-else:
-    print("Insufficient data for ceftazidime analysis.")
+print("The ceftazidime cross-drug validation has been REMOVED to address")
+print("reviewer concern #3 (circularity / data artefact). The binary resistance")
+print("label n_caz is likely derived from the same MIC values used to compute")
+print("ASI_caz, creating a circular dependency. The perfect AUC = 1.000")
+print("reported in the original script is consistent with this artefact.")
+print("Per reviewer recommendation: 'Better to drop it.'")
+print("=" * 70)
 
 # ============================================================
 # 13. COMPREHENSIVE SUMMARY TABLE
@@ -973,7 +939,7 @@ summary = {
         'Mixed strain isolates',
         'Meropenem-resistant (n_mem=1)',
         'MDR isolates',
-        'Optimal C (mg/L)',
+        'Fixed C (mg/L) — literature-based',
         'Cohens d (meropenem)',
         'Mann-Whitney p (meropenem)',
         'ROC AUC (meropenem)',
@@ -987,8 +953,8 @@ summary = {
         'Permutation test p',
         'Bootstrap CI lower (mean diff)',
         'Bootstrap CI upper (mean diff)',
-        'Ceftazidime Cohens d',
-        'Ceftazidime AUC'
+        'Ceftazidime analysis',
+        'Surrogate formula alignment'
     ],
     'Value': [
         len(df),
@@ -1011,8 +977,8 @@ summary = {
         f"{perm_p:.6f}",
         f"{bootstrap_result.confidence_interval.low:.4f}" if 'bootstrap_result' in locals() else "N/A",
         f"{bootstrap_result.confidence_interval.high:.4f}" if 'bootstrap_result' in locals() else "N/A",
-        f"{cohens_d_c:.3f}" if 'cohens_d_c' in locals() else "N/A",
-        f"{auc_caz:.3f}" if 'auc_caz' in locals() else "N/A"
+        "REMOVED (circularity risk per reviewer)",
+        "Aligned to compendium Sec 2.4 / 4.6.1 (no N/K term)"
     ]
 }
 
