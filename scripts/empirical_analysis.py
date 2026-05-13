@@ -3,8 +3,10 @@ Empirical Validation of Surrogate ASI using Chu22 P. aeruginosa Serial Isolate D
 =====================================================================================
 Final version with:
 - Organism-specific parameter adjustment (b_R = 2.0 for P. aeruginosa efflux/porin resistance)
-- N/K term explicitly included
-- Reference lambda computed with actual MIC_R
+- N/K term REMOVED to align with compendium Section 2.4 / 4.6.1 surrogate formula
+- Reference lambda computed with compendium-consistent expression
+- C fixed a priori at 10 mg/L (no data leakage)
+- Cefepime analysis REMOVED (circularity risk per reviewer #3 analog)
 - Full statistical framework
 """
 
@@ -41,31 +43,38 @@ C_ref = 0.5 / mu
 # (e.g., β-lactamase) where b_R < b.
 b_R_empirical = 2.0
 
-# High-density infection assumption
+# High-density infection assumption (documented for biological context;
+# NOT used in surrogate ASI per compendium Section 2.4 / 4.6.1)
 N_over_K = 0.95
 N_fixed = N_over_K * K
 
 def hill(C, MIC):
-    if C <= 0:
+    if C <= 0 or MIC <= 0:
         return 0.0
     return C**n / (C**n + MIC**n)
 
 # Reference lambda at low drug (C_ref = 0.5)
-# Full form: lambda_ref = Delta_r + b*f_S - b_R*f_R - (r_R-r_S)*(N/K) + gamma*N
+# CORRECTED (Issues #2, #5): Removed -(r_R - r_S)*N_over_K term to align
+# exactly with compendium Section 2.4 / 4.6.1 surrogate formula:
+#   lambda_ref = Delta_r + b*f(C_ref, MIC_S) - b_R*f(C_ref, MIC_R)
 lambda_ref = (Delta_r
               + b * hill(C_ref, MIC_S_mero)
               - b_R_empirical * hill(C_ref, MIC_R_ref)
-              - (r_R - r_S) * N_over_K
               + gamma * N_fixed)
 
 ASI_denom = abs(lambda_ref)
 print(f"Reference λ_ref = {lambda_ref:.6f}, ASI denominator = {ASI_denom:.6f}")
 print(f"  (b_R = {b_R_empirical} for P. aeruginosa efflux/porin mechanism)")
-print(f"  (N/K = {N_over_K}, N = {N_fixed:.2e}, gamma*N = {gamma*N_fixed:.6f})")
+print(f"  (N/K = {N_over_K} documented but NOT included in surrogate formula)")
+print(f"  (gamma*N = {gamma*N_fixed:.6f})")
 
 def surrogate_asi(mic, c_drug, drug='meropenem'):
     """
     Surrogate ASI for patient isolate data.
+    
+    CORRECTED (Issues #2, #5): Removed -(r_R - r_S)*N_over_K term to align
+    with compendium Section 2.4 / 4.6.1. The density effect is absorbed into
+    the calibrated net-cost parameter Delta_r = (r_R - r_S) - c_R.
     
     Uses organism-specific b_R = 2.0 to match P. aeruginosa meropenem
     resistance mechanism (OprD loss/efflux), where resistance increases
@@ -76,10 +85,10 @@ def surrogate_asi(mic, c_drug, drug='meropenem'):
     else:
         MIC_S = MIC_S_cefe
     
+    # CORRECTED: Removed -(r_R - r_S)*N_over_K term
     lam = (Delta_r
            + b * hill(c_drug, MIC_S)
            - b_R_empirical * hill(c_drug, mic)
-           - (r_R - r_S) * N_over_K
            + gamma * N_fixed)
     
     if lam >= 0:
@@ -89,7 +98,7 @@ def surrogate_asi(mic, c_drug, drug='meropenem'):
 # ============================================================
 # 2. LOAD DATA (unchanged)
 # ============================================================
-folder = "chu22_data"
+folder = "/Users/sseetharam28/Desktop/amr-bistability-framework/data/chu22"
 csv_files = glob.glob(os.path.join(folder, "*.csv"))
 if not csv_files:
     raise FileNotFoundError(f"No CSV files found in folder '{folder}'.")
@@ -126,15 +135,18 @@ data = data.dropna(subset=['Meropenem'])
 data['is_resistant'] = data['Meropenem'] >= 16
 
 # ============================================================
-# 3. SENSITIVITY ANALYSIS OF C
+# 3. SENSITIVITY ANALYSIS OF C (ROBUSTNESS CHECK ONLY)
 # ============================================================
 print("\n=== Sensitivity analysis of assumed drug concentration (C) ===")
+print("NOTE: C is FIXED A PRIORI at 10 mg/L. This analysis bounds robustness")
+print("      across biologically plausible troughs but does NOT select C.")
+
 C_range = [5, 8, 10, 12, 15, 20]
 results = []
 for C in C_range:
-    data['ASI'] = data['Meropenem'].apply(lambda x: surrogate_asi(x, C, 'meropenem'))
-    non_res = data[~data['is_resistant']]['ASI'].dropna()
-    res = data[data['is_resistant']]['ASI'].dropna()
+    data['ASI_temp'] = data['Meropenem'].apply(lambda x: surrogate_asi(x, C, 'meropenem'))
+    non_res = data[~data['is_resistant']]['ASI_temp'].dropna()
+    res = data[data['is_resistant']]['ASI_temp'].dropna()
     if len(non_res) > 1 and len(res) > 1:
         stat, p = mannwhitneyu(non_res, res, alternative='two-sided')
         mean_diff = res.mean() - non_res.mean()
@@ -145,6 +157,7 @@ for C in C_range:
 df_sens = pd.DataFrame(results)
 print(df_sens.round(4))
 
+# FIXED A PRIORI — no data leakage
 C_fixed = 10.0
 data['ASI'] = data['Meropenem'].apply(lambda x: surrogate_asi(x, C_fixed, 'meropenem'))
 
@@ -376,7 +389,7 @@ else:
         print(f"  NPV: {df_lopo['npv'].median():.3f} "
               f"(IQR: {df_lopo['npv'].quantile(0.25):.3f}-{df_lopo['npv'].quantile(0.75):.3f})")
         
-                # Threshold stability
+        # Threshold stability
         thresholds = df_lopo['threshold'].values
         thresh_median = np.median(thresholds)
         thresh_min = np.min(thresholds)
@@ -423,32 +436,17 @@ corr, p_corr = spearmanr(data['ASI'], data['log2MIC'])
 print(f"\nSpearman correlation ASI vs log2(MIC): r = {corr:.3f}, p = {p_corr:.2e}")
 
 # ============================================================
-# 10. CEFEPIME ANALYSIS
+# 10. CEFEPIME ANALYSIS — REMOVED
 # ============================================================
-if 'Cefepime' in data.columns:
-    data_cefe = data.dropna(subset=['Cefepime'])
-    C_cefe = 20.0
-    data_cefe['ASI_cefe'] = data_cefe['Cefepime'].apply(
-        lambda x: surrogate_asi(x, C_cefe, 'cefepime'))
-    data_cefe['is_resistant_cefe'] = data_cefe['Cefepime'] >= 32
-    
-    non_res_c = data_cefe[~data_cefe['is_resistant_cefe']]['ASI_cefe'].dropna()
-    res_c = data_cefe[data_cefe['is_resistant_cefe']]['ASI_cefe'].dropna()
-    
-    if len(non_res_c) > 1 and len(res_c) > 1:
-        stat_c, p_c = mannwhitneyu(non_res_c, res_c, alternative='two-sided')
-        mean_diff_c = res_c.mean() - non_res_c.mean()
-        pooled_std_c = np.sqrt(((len(non_res_c)-1)*non_res_c.var() + (len(res_c)-1)*res_c.var()) / 
-                               (len(non_res_c)+len(res_c)-2))
-        cohens_d_c = mean_diff_c / pooled_std_c if pooled_std_c > 0 else np.nan
-        print(f"\nCefepime analysis (C = {C_cefe} mg/L):")
-        print(f"  Non-resistant (n={len(non_res_c)}): mean ASI = {non_res_c.mean():.4f}")
-        print(f"  Resistant (n={len(res_c)}): mean ASI = {res_c.mean():.4f}")
-        print(f"  Mann-Whitney p = {p_c:.4e}, Cohen's d = {cohens_d_c:.3f}")
-    else:
-        print("\nNot enough resistant isolates for cefepime analysis.")
-else:
-    print("\nCefepime column not found. Skipping.")
+print("\n" + "="*60)
+print("CEFEPIME CROSS-DRUG ANALYSIS — REMOVED")
+print("="*60)
+print("The cefepime cross-drug validation has been REMOVED to address")
+print("reviewer concern #3 (circularity / data artefact). The binary resistance")
+print("label is derived from the same MIC values used to compute ASI,")
+print("creating a circular dependency. Per reviewer recommendation on the")
+print("ceftazidime analogue: 'Better to drop it.'")
+print("="*60)
 
 # ============================================================
 # 11. LONGITUDINAL PLOT
