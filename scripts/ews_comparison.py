@@ -1,11 +1,14 @@
 """
 ================================================================================
-COMPREHENSIVE EWS COMPARISON: ASI vs All Classical Indicators (CORRECTED v3)
+COMPREHENSIVE EWS COMPARISON: ASI vs All Classical Indicators (CORRECTED v4)
 ================================================================================
-Corrections from v1:
-  1. Biological framing CORRECTED: bistability is between extinction (N=0) and
-     stable coexistence (p≈0.402), per compendium v4. The I-sweep shows how
-     dosing modulates the coexistence equilibrium until it loses stability.
+Corrections from v3:
+  1. Bifurcation framing CORRECTED to match verified structure:
+       I ∈ [1.0, 4.7]:   Monostable — interior coexistence only
+       I ∈ [4.7, 11.6]:  Bistable TYPE 1 — extinction ↔ coexistence (p≈0.4)
+       I ∈ [11.6, 34.5]: Bistable TYPE 2 — extinction ↔ resistant-only (p=1)
+       I > 34.5:         Monostable — extinction only
+     This script analyzes the TYPE 1 regime only (I = 3.0–11.2).
   2. Full state (N, p, C) stored for each realization, enabling proper
      per-trajectory ASI computation for TTD analysis.
   3. TTD rewritten: trigger = ASI(instantaneous state) < 0.1,
@@ -19,9 +22,12 @@ MATHEMATICAL FRAMEWORK (Compendium v4, Sections 2.2, 4.6)
 --------------------------------------------------------
 The 3D ODE system (N, p, C) exhibits density-dependent bistability at I=5.0:
   N* ≈ 9.53e8, p* ≈ 0.402, C* ≈ 0.577 (all eigenvalues negative).
-As dosing rate I increases, the coexistence equilibrium shifts and eventually
-loses stability (λ_dom → 0⁻). The ASI = -Re(λ_dom)/|Re(λ_dom,ref)| captures
-this approach to instability: ASI → 0⁺ as the system approaches the bifurcation.
+As dosing rate I increases through the TYPE 1 regime, the coexistence equilibrium
+shifts (p* increases) and approaches the p=1 boundary. At I*₂ ≈ 11.6, the interior
+equilibrium merges with the p=1 boundary in a transcritical bifurcation. Beyond
+this point, the system enters TYPE 2 bistability (extinction ↔ resistant-only).
+The ASI = -Re(λ_dom)/|Re(λ_dom,ref)| captures approach to the transcritical
+point: ASI → 0⁺ as the coexistence state disappears into the p=1 boundary.
 
 Classical EWS (variance, AR(1), skewness, kurtosis, CV, spectral ratio) are
 computed on post-burn-in p-trajectories. Per the Fokker-Planck derivation
@@ -169,11 +175,11 @@ def compute_ASI(N, p, C, ref_I=1.0):
 # As I increases, the coexistence equilibrium shifts and eventually loses
 # stability (λ_dom → 0⁻). This is a transcritical/fold bifurcation where the
 # coexistence state collides with the extinction boundary (N=0). The bifurcation
-# point I_bif marks the transition from stable coexistence to extinction-only.
+# point I_trans marks the transition from stable coexistence to extinction-only.
 
-def find_bifurcation_point():
+def find_transcritical_point():
     I_test = np.linspace(1, 12.5, 150)
-    valid = []; prev_lam = None; bif_I = None
+    valid = []; prev_lam = None; I_trans = None
     for idx, I_val in enumerate(I_test):
         X = find_equilibrium(I_val)
         if X is not None:
@@ -182,11 +188,11 @@ def find_bifurcation_point():
                 lam = np.max(np.real(eigvals(jacobian(N, p, C))))
                 valid.append((I_val, N, p, C, lam))
                 if prev_lam is not None and prev_lam > 0 and lam < 0:
-                    bif_I = I_test[idx-1]
+                    I_trans = I_test[idx-1]
                 prev_lam = lam
     if len(valid) == 0: return None, []
-    if bif_I is None: bif_I = valid[-1][0]
-    return bif_I, valid
+    if I_trans is None: I_trans = valid[-1][0]
+    return I_trans, valid
 
 # ============================================================
 # FAST SIMULATION
@@ -316,13 +322,13 @@ def main():
     print("CORRECTED EWS ANALYSIS — I-BASED BIFURCATION APPROACH")
     print("="*70)
 
-    # [1] Bifurcation
-    I_bif, valid_data = find_bifurcation_point()
-    print(f"\n[1] Bifurcation at I ≈ {I_bif:.2f}")
+    # [1] Transcritical point (TYPE 1 regime boundary)
+    I_trans, valid_data = find_transcritical_point()
+    print(f"\n[1] Bifurcation at I ≈ {I_trans:.2f}")
 
     # [2] Conditions: Far, Mid, Near + Control (sub-critical, no tipping)
     I_far, I_mid = 5.0, 9.0
-    I_near = max(5.0, min(I_bif - 0.3, 11.5))
+    I_near = max(5.0, min(I_trans - 0.3, 11.5))
     I_control = 3.0
     conditions = [
         ("Control", I_control, "#9467bd"),
@@ -444,7 +450,7 @@ def main():
     # ROW 0: THEORY
     ax = fig.add_subplot(gs[0, 0])
     ax.plot(I_vals, p_vals, 'k-', linewidth=2.5, label='Stable branch')
-    ax.axvline(x=I_bif, color='r', linestyle='--', linewidth=2, alpha=0.7, label=f'Bifurcation I={I_bif:.2f}')
+    ax.axvline(x=I_trans, color='r', linestyle='--', linewidth=2, alpha=0.7, label=f'Bifurcation I={I_trans:.2f}')
     for name, I_val, color in conditions:
         X = find_equilibrium(I_val)
         if X is not None:
@@ -457,7 +463,7 @@ def main():
 
     ax = fig.add_subplot(gs[0, 1])
     ax.plot(I_vals, asi_vals, 'o-', color='darkgreen', markersize=4, linewidth=1.5, alpha=0.8, label='ASI (true)')
-    ax.axvline(x=I_bif, color='r', linestyle='--', linewidth=2, alpha=0.7)
+    ax.axvline(x=I_trans, color='r', linestyle='--', linewidth=2, alpha=0.7)
     ax.axhline(y=0, color='k', linewidth=1, alpha=0.5)
     for name in ["Control", "Far", "Mid", "Near"]:
         r = results[name]
@@ -471,7 +477,7 @@ def main():
 
     ax = fig.add_subplot(gs[0, 2])
     ax.plot(I_vals, -np.array(lam_vals), 'o-', color='blue', markersize=4, linewidth=1.5, alpha=0.8, label='-lambda_dom (true)')
-    ax.axvline(x=I_bif, color='r', linestyle='--', linewidth=2, alpha=0.7)
+    ax.axvline(x=I_trans, color='r', linestyle='--', linewidth=2, alpha=0.7)
     ax.axhline(y=0, color='k', linewidth=1, alpha=0.5)
     ax.set_xlabel('Drug dosing rate I', fontsize=14)
     ax.set_ylabel('-lambda_dom', fontsize=14)
@@ -720,7 +726,7 @@ def main():
         print(f"{name:<18} {r['I']:>8.1f} {asi_val:>8.4f} {var_mean:>12.6f} {ar1_mean:>10.4f} {skew_mean:>10.4f} {kurt_mean:>10.4f} {cv_mean:>10.4f} {spec_mean:>12.4f} {ensv_mean:>12.4f}")
 
     print("\n" + "="*70)
-    print("COMPLETE — Corrected: I-based bifurcation, full-state TTD, comparison panels")
+    print("COMPLETE — TYPE 1 regime analysis: transcritical approach, full-state TTD, comparison panels")
     print("="*70)
 
 if __name__ == "__main__":
