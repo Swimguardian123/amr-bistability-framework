@@ -414,7 +414,7 @@ def main():
     ttd_I      = 12.0          # TYPE 1 regime, just below I*2 ≈ 12.5
     ttd_t_max  = 5000.0        # Extended horizon — escape takes time
     ttd_dt     = 0.02
-    ttd_n_real = 20            # Fewer realizations OK because tipping is now common
+    ttd_n_real = 100            # Fewer realizations OK because tipping is now common
 
     # Use Near-condition equilibrium as starting point
     r_near = results["Near"]
