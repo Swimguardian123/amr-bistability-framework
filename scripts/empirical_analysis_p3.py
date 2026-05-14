@@ -911,6 +911,163 @@ if len(serial_patients) > 0:
                   f"(n={len(sub)})")
 
 # ============================================================
+# 11b. PROSPECTIVE PREDICTION: BASELINE ASI PREDICTS FUTURE RESISTANCE
+# ============================================================
+print("\n" + "=" * 70)
+print("PROSPECTIVE PREDICTION: BASELINE ASI → FUTURE RESISTANCE")
+print("=" * 70)
+
+# For each patient with serial isolates, compute:
+#   - Baseline ASI (mean ASI at sample 1)
+#   - Outcome: resistance progression (binary) or time-to-resistance
+
+# Build patient-level longitudinal data
+patient_summary = []
+for pat in serial_patients:
+    sub = df[df['patient_id'] == pat].sort_values('sample')
+    
+    # Baseline (sample 1)
+    baseline = sub[sub['sample'] == sub['sample'].min()]
+    baseline_asi = baseline['ASI_mem'].mean()
+    baseline_resistant = (baseline['n_mem'] == 1).any()  # any resistant at baseline?
+    baseline_mixed = (baseline['strain_type'] == 'Mixed strain').iloc[0]
+    
+    # Final (sample max)
+    final = sub[sub['sample'] == sub['sample'].max()]
+    final_resistant = (final['n_mem'] == 1).any()
+    final_asi = final['ASI_mem'].mean()
+    
+    # Outcome definitions
+    became_resistant = (not baseline_resistant) and final_resistant
+    remained_resistant = baseline_resistant and final_resistant
+    cleared_resistance = baseline_resistant and (not final_resistant)
+    stayed_susceptible = (not baseline_resistant) and (not final_resistant)
+    
+    # Resistance progression: any increase in resistance burden
+    baseline_res_count = baseline['res_count'].mean()
+    final_res_count = final['res_count'].mean()
+    res_count_increase = final_res_count - baseline_res_count
+    
+    patient_summary.append({
+        'patient': pat,
+        'strain_type': 'Mixed' if baseline_mixed else 'Single',
+        'baseline_asi': baseline_asi,
+        'final_asi': final_asi,
+        'asi_change': final_asi - baseline_asi,
+        'baseline_resistant': int(baseline_resistant),
+        'final_resistant': int(final_resistant),
+        'became_resistant': int(became_resistant),
+        'remained_resistant': int(remained_resistant),
+        'cleared_resistance': int(cleared_resistance),
+        'stayed_susceptible': int(stayed_susceptible),
+        'baseline_res_count': baseline_res_count,
+        'final_res_count': final_res_count,
+        'res_count_increase': res_count_increase,
+        'n_isolates_baseline': len(baseline),
+        'n_isolates_final': len(final),
+    })
+
+df_prosp = pd.DataFrame(patient_summary)
+print(f"Patients with serial isolates for prospective analysis: {len(df_prosp)}")
+print(f"  Baseline resistant: {df_prosp['baseline_resistant'].sum()}")
+print(f"  Baseline susceptible: {(df_prosp['baseline_resistant'] == 0).sum()}")
+print(f"  Became resistant (new acquisition): {df_prosp['became_resistant'].sum()}")
+print(f"  Stayed susceptible: {df_prosp['stayed_susceptible'].sum()}")
+print(f"  Cleared resistance: {df_prosp['cleared_resistance'].sum()}")
+
+# --- Analysis 1: Baseline ASI predicts resistance at final timepoint ---
+from sklearn.metrics import roc_curve, auc
+
+# Exclude patients already resistant at baseline (focus on acquisition)
+df_acquisition = df_prosp[df_prosp['baseline_resistant'] == 0].copy()
+
+if len(df_acquisition) >= 5 and df_acquisition['final_resistant'].nunique() > 1:
+    y_true_acq = df_acquisition['final_resistant'].values
+    y_score_acq = -df_acquisition['baseline_asi'].values  # higher ASI = more risk
+    
+    fpr_acq, tpr_acq, _ = roc_curve(y_true_acq, y_score_acq)
+    auc_acq = auc(fpr_acq, tpr_acq)
+    
+    print(f"\n--- Prospective AUC (baseline ASI → resistance acquisition) ---")
+    print(f"  N = {len(df_acquisition)} (susceptible at baseline)")
+    print(f"  AUC = {auc_acq:.3f}")
+    print(f"  Became resistant: {y_true_acq.sum()}")
+    print(f"  Stayed susceptible: {(y_true_acq == 0).sum()}")
+    
+    # Mann-Whitney: baseline ASI in future-resistant vs future-susceptible
+    future_res = df_acquisition[df_acquisition['final_resistant'] == 1]['baseline_asi'].dropna()
+    future_sus = df_acquisition[df_acquisition['final_resistant'] == 0]['baseline_asi'].dropna()
+    if len(future_res) > 0 and len(future_sus) > 0:
+        stat_acq, p_acq = mannwhitneyu(future_res, future_sus, alternative='two-sided')
+        print(f"  Baseline ASI — Future resistant: {future_res.mean():.4f}")
+        print(f"  Baseline ASI — Future susceptible: {future_sus.mean():.4f}")
+        print(f"  Mann-Whitney p = {p_acq:.4f}")
+else:
+    print(f"\nInsufficient data for prospective acquisition analysis (N={len(df_acquisition)})")
+
+# --- Analysis 2: ASI change predicts resistance trajectory ---
+print(f"\n--- ASI change vs resistance trajectory ---")
+for outcome, label in [('became_resistant', 'Became resistant'),
+                        ('remained_resistant', 'Remained resistant'),
+                        ('cleared_resistance', 'Cleared resistance'),
+                        ('stayed_susceptible', 'Stayed susceptible')]:
+    sub = df_prosp[df_prosp[outcome] == 1]
+    if len(sub) > 0:
+        print(f"  {label}: n={len(sub)}, mean ASI change = {sub['asi_change'].mean():.4f} ± {sub['asi_change'].std():.4f}")
+
+# --- Analysis 3: Single vs Mixed strain prospective dynamics ---
+print(f"\n--- Prospective dynamics by strain type ---")
+for stype in ['Single', 'Mixed']:
+    sub = df_prosp[df_prosp['strain_type'] == stype]
+    if len(sub) > 0:
+        print(f"\n  {stype} strain (n={len(sub)}):")
+        print(f"    Became resistant: {sub['became_resistant'].sum()}")
+        print(f"    Stayed susceptible: {sub['stayed_susceptible'].sum()}")
+        print(f"    Cleared resistance: {sub['cleared_resistance'].sum()}")
+        print(f"    Mean baseline ASI: {sub['baseline_asi'].mean():.4f}")
+        print(f"    Mean ASI change: {sub['asi_change'].mean():.4f}")
+
+# --- Visualization ---
+fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+# Plot 1: Baseline ASI by final resistance status (acquisition cohort)
+ax = axes[0]
+if len(df_acquisition) > 0 and 'auc_acq' in locals():
+    colors = ['#3498db' if r == 0 else '#e74c3c' for r in df_acquisition['final_resistant']]
+    ax.scatter(df_acquisition['baseline_asi'], 
+               np.random.normal(0, 0.05, len(df_acquisition)),  # jitter
+               c=colors, alpha=0.7, s=100, edgecolors='black')
+    ax.axvline(x=df_acquisition['baseline_asi'].median(), color='gray', linestyle='--', alpha=0.5)
+    ax.set_xlabel('Baseline ASI (Sample 1)')
+    ax.set_ylabel('Jittered')
+    ax.set_title(f'Baseline ASI Predicts Resistance Acquisition\nAUC = {auc_acq:.3f}')
+    ax.set_yticks([])
+    ax.grid(True, alpha=0.3)
+    # Legend
+    from matplotlib.patches import Patch
+    legend_elements = [Patch(facecolor='#3498db', label='Stayed susceptible'),
+                       Patch(facecolor='#e74c3c', label='Became resistant')]
+    ax.legend(handles=legend_elements, loc='upper right')
+
+# Plot 2: ASI trajectory by patient
+ax = axes[1]
+for _, row in df_prosp.iterrows():
+    color = '#e74c3c' if row['final_resistant'] else '#3498db'
+    linestyle = '-' if row['strain_type'] == 'Single' else '--'
+    ax.plot([1, 2], [row['baseline_asi'], row['final_asi']], 
+            color=color, linestyle=linestyle, alpha=0.5, linewidth=1.5)
+ax.set_xlabel('Sample Timepoint')
+ax.set_ylabel('Mean ASI')
+ax.set_title('ASI Trajectories by Patient')
+ax.set_xticks([1, 2])
+ax.set_xticklabels(['Baseline', 'Final'])
+ax.grid(True, alpha=0.3)
+
+plt.tight_layout()
+plt.savefig('asi_prospective_prediction.png', dpi=300, bbox_inches='tight')
+plt.show()
+
+# ============================================================
 # 12. CROSS-DRUG ANALYSIS (Ceftazidime) — REMOVED
 # ============================================================
 print("\n" + "=" * 70)
@@ -931,57 +1088,67 @@ print("\n" + "=" * 70)
 print("COMPREHENSIVE SUMMARY TABLE")
 print("=" * 70)
 
-summary = {
-    'Metric': [
-        'Total isolates',
-        'Total patients',
-        'Single strain isolates',
-        'Mixed strain isolates',
-        'Meropenem-resistant (n_mem=1)',
-        'MDR isolates',
-        'Fixed C (mg/L) — literature-based',
-        'Cohens d (meropenem)',
-        'Mann-Whitney p (meropenem)',
-        'ROC AUC (meropenem)',
-        'AUC 95% CI lower',
-        'AUC 95% CI upper',
-        'Spearman r (ASI vs log2MIC)',
-        'Spearman p (ASI vs log2MIC)',
-        'LOPOCV median accuracy',
-        'LOPOCV median sensitivity',
-        'LOPOCV median specificity',
-        'Permutation test p',
-        'Bootstrap CI lower (mean diff)',
-        'Bootstrap CI upper (mean diff)',
-        'Ceftazidime analysis',
-        'Surrogate formula alignment'
-    ],
-    'Value': [
-        len(df),
-        df['patient_id'].nunique(),
-        (df['strain_type'] == 'Single strain').sum(),
-        (df['strain_type'] == 'Mixed strain').sum(),
-        (df['n_mem'] == 1).sum(),
-        (df['MDR'] == 1).sum(),
-        C_fixed,
-        f"{cohens_d:.3f}",
-        f"{p_val:.2e}",
-        f"{roc_auc:.3f}",
-        f"{ci_low:.3f}",
-        f"{ci_high:.3f}",
-        f"{corr_mem:.3f}",
-        f"{p_corr_mem:.2e}",
-        f"{df_lopo['accuracy'].median():.3f}" if lopo_results else "N/A",
-        f"{df_lopo['sensitivity'].median():.3f}" if lopo_results else "N/A",
-        f"{df_lopo['specificity'].median():.3f}" if lopo_results else "N/A",
-        f"{perm_p:.6f}",
-        f"{bootstrap_result.confidence_interval.low:.4f}" if 'bootstrap_result' in locals() else "N/A",
-        f"{bootstrap_result.confidence_interval.high:.4f}" if 'bootstrap_result' in locals() else "N/A",
-        "REMOVED (circularity risk per reviewer)",
-        "Aligned to compendium Sec 2.4 / 4.6.1 (no N/K term)"
-    ]
-}
+# Build lists dynamically to avoid length mismatches
+metric_list = [
+    'Total isolates',
+    'Total patients',
+    'Single strain isolates',
+    'Mixed strain isolates',
+    'Meropenem-resistant (n_mem=1)',
+    'MDR isolates',
+    'Fixed C (mg/L) — literature-based',
+    'Cohens d (meropenem)',
+    'Mann-Whitney p (meropenem)',
+    'ROC AUC (meropenem)',
+    'AUC 95% CI lower',
+    'AUC 95% CI upper',
+    'Spearman r (ASI vs log2MIC)',
+    'Spearman p (ASI vs log2MIC)',
+    'LOPOCV median accuracy',
+    'LOPOCV median sensitivity',
+    'LOPOCV median specificity',
+    'Permutation test p',
+    'Bootstrap CI lower (mean diff)',
+    'Bootstrap CI upper (mean diff)',
+    'Prospective AUC (baseline ASI → resistance)',
+    'Prospective N (susceptible at baseline)',
+    'Prospective p-value (MW)',
+    'Ceftazidime analysis',
+    'Surrogate formula alignment'
+]
 
+value_list = [
+    len(df),
+    df['patient_id'].nunique(),
+    (df['strain_type'] == 'Single strain').sum(),
+    (df['strain_type'] == 'Mixed strain').sum(),
+    (df['n_mem'] == 1).sum(),
+    (df['MDR'] == 1).sum(),
+    C_fixed,
+    f"{cohens_d:.3f}" if 'cohens_d' in locals() else "N/A",
+    f"{p_val:.2e}" if 'p_val' in locals() else "N/A",
+    f"{roc_auc:.3f}" if 'roc_auc' in locals() else "N/A",
+    f"{ci_low:.3f}" if 'ci_low' in locals() else "N/A",
+    f"{ci_high:.3f}" if 'ci_high' in locals() else "N/A",
+    f"{corr_mem:.3f}" if 'corr_mem' in locals() else "N/A",
+    f"{p_corr_mem:.2e}" if 'p_corr_mem' in locals() else "N/A",
+    f"{df_lopo['accuracy'].median():.3f}" if lopo_results else "N/A",
+    f"{df_lopo['sensitivity'].median():.3f}" if lopo_results else "N/A",
+    f"{df_lopo['specificity'].median():.3f}" if lopo_results else "N/A",
+    f"{perm_p:.6f}" if 'perm_p' in locals() else "N/A",
+    f"{bootstrap_result.confidence_interval.low:.4f}" if 'bootstrap_result' in locals() else "N/A",
+    f"{bootstrap_result.confidence_interval.high:.4f}" if 'bootstrap_result' in locals() else "N/A",
+    f"{auc_acq:.3f}" if 'auc_acq' in locals() else "N/A",
+    f"{len(df_acquisition)}" if 'df_acquisition' in locals() else "N/A",
+    f"{p_acq:.4f}" if 'p_acq' in locals() else "N/A",
+    "REMOVED (circularity risk per reviewer)",
+    "Aligned to compendium Sec 2.4 / 4.6.1 (no N/K term)"
+]
+
+# Safety check
+assert len(metric_list) == len(value_list), f"Length mismatch: metrics={len(metric_list)}, values={len(value_list)}"
+
+summary = {'Metric': metric_list, 'Value': value_list}
 df_summary = pd.DataFrame(summary)
 print(df_summary.to_string(index=False))
 
