@@ -1,13 +1,13 @@
-# Acute Stability Index (ASI) for Early Warning of Resistance Tipping in Antimicrobial Resistance
+# AMR Stability Index (ASI) for Early Warning of Resistance Tipping in Antimicrobial Resistance
 
-**Research code for:** Acute Stability Index + EWS for Antimicrobial Resistance
+**Research code for:** AMR Stability Index + EWS for Antimicrobial Resistance
 **Authors:** Sanath Seetharam
 **Contact:** sanath.seetharam@gmail.com
 ---
 
 ## Overview
 
-This repository contains the complete computational framework for deriving, validating, and empirically testing a **surrogate Acute Stability Index (ASI)** — a model-based early warning signal (EWS) for predicting antibiotic resistance tipping points in bacterial populations. The surrogate ASI approximates the dominant eigenvalue of the full pharmacodynamic Jacobian using only clinically observable quantities (MIC, drug concentration), bypassing the need for unobservable state variables (bacterial density, resistant fraction).
+This repository contains the complete computational framework for deriving, validating, and empirically testing a **surrogate AMR Stability Index (ASI)** — a model-based early warning signal (EWS) for predicting antibiotic resistance tipping points in bacterial populations. The surrogate ASI approximates the dominant eigenvalue of the full pharmacodynamic Jacobian using only clinically observable quantities (MIC, drug concentration), bypassing the need for unobservable state variables (bacterial density, resistant fraction).
 
 ### Key Contributions
 
