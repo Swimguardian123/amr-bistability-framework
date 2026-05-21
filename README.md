@@ -66,7 +66,7 @@ pip install -r requirements.txt
 python theory/surrogate_validation.py
 ```
 
-Validates the surrogate eigenvalue against the true Jacobian p-eigenvalue (J₂₂) along a tipping trajectory. Expected output: correlation r ≈ 0.996, MAE ≈ 4×10⁻⁴.
+Validates the surrogate eigenvalue against the true Jacobian p-eigenvalue (J₂₂) along a tipping trajectory.
 
 ### 3. Run Sensitivity Analysis
 
@@ -74,7 +74,7 @@ Validates the surrogate eigenvalue against the true Jacobian p-eigenvalue (J₂�
 python sensitivity/comprehensive_sensitivity.py
 ```
 
-Computes critical infusion rate I* across 11 parameters with full stability verification and bisection refinement. Runtime: ~10–15 minutes.
+Computes critical infusion rate I* across 11 parameters with full stability verification and bisection refinement.
 
 ### 4. Run EWS Comparison
 
@@ -92,7 +92,7 @@ Generates the 5×3 comprehensive figure comparing surrogate ASI against six clas
 python empirical/empirical_validation.py
 ```
 
-Performs leave-one-patient-out cross-validation (LOPOCV) on *P. aeruginosa* serial isolates. Expected output: median accuracy = 1.000, pooled AUC ≈ 0.98.
+Performs leave-one-patient-out cross-validation (LOPOCV) on *P. aeruginosa* serial isolates.
 
 ---
 
