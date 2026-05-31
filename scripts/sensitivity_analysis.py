@@ -1,85 +1,41 @@
 """
 ================================================================================
-COMPREHENSIVE PARAMETER SENSITIVITY ANALYSIS (v4 — Global + Uncertainty + ASI)
+COMPREHENSIVE PARAMETER SENSITIVITY ANALYSIS (v4-lean — Structural + Regime)
 ================================================================================
 
-INTEGRATED FEEDBACK — ALL REVIEWER SUGGESTIONS IMPLEMENTED:
+PURPOSE:
+  Quantify (i) what controls bifurcation structure, (ii) what controls ASI 
+  magnitude, and (iii) under what parameter regimes ASI retains predictive 
+  utility. Complements — does not replace — external validation scripts.
 
-1. GLOBAL SENSITIVITY (Sobol indices)
-   - Replaces one-at-a-time with variance-based decomposition
-   - First-order (S1) + Total-order (ST) indices with bootstrap CIs
-   - Uses QMC Sobol sampling (Saltelli 2010 scheme)
-   - SALib-independent implementation via scipy.stats.qmc
+MODULES:
+  [1] Baseline regime boundaries
+  [2] OAT sensitivity sweeps (11 parameters) — directional/structural
+  [3] Two-parameter interaction heatmaps — regime switching
+  [4] Global Sobol sensitivity (I*2 location) — variance decomposition
+  [5] Parameter uncertainty propagation — epistemic spread
+  [6] Global Sobol sensitivity (ASI magnitude) — marker sensitivity
+  [7] ASI uncertainty at fixed I — bimodality/censoring
+  [8] Stratified ASI performance by η/MIC_S regime — validity boundaries
+  [9] Consolidated figure output
 
-2. ASI BIOMARKER SENSITIVITY
-   - Metric 1: Sensitivity of transcritical location (I*2)
-   - Metric 2: Sensitivity of ASI itself across parameter space
-   - Computes corr(ASI_true, ASI_surrogate) per parameter set
-   - Computes AUC(ASI) classification performance vs classical EWS
-
-3. VIRTUAL INFECTION COHORT
-   - 10,000+ mechanistically distinct virtual infections
-   - Each: random parameters → trajectory → ASI + classical EWS
-   - Statistical test: does ASI consistently outperform classical indicators?
-
-4. PARAMETER UNCERTAINTY PROPAGATION
-   - Distributional priors: Normal / LogNormal per parameter
-   - Monte Carlo sampling with joint parameter variation
-   - Reports: I2 = mean ± std, 95% CI
-
-5. RETAINED BASELINE ANALYSES
-   - OAT sweeps (for comparison with global results)
-   - Two-parameter interaction heatmaps
-   - Baseline cross-check against compendium v4
-
-CORRECTED BIFURCATION CONTEXT
------------------------------
-The full 3D model exhibits SEQUENTIAL regime transitions:
-  • I*1 ≈ 4.7:  Extinction becomes stable (monostable → bistable TYPE 1)
-  • I*2 ≈ 11.6: Interior merges with p=1 boundary (transcritical, TYPE 1 → TYPE 2)
-  • I*3 ≈ 34.5: p=1 boundary disappears via saddle-node (bistable → monostable)
-
-This script computes I*2 — the transcritical point where interior coexistence
-merges with the p=1 boundary and ceases to exist.
-
-METHODOLOGY
------------
-- Global sensitivity: Sobol decomposition captures main effects + interactions
-- ASI sensitivity: Tests whether biomarker works, not just where tipping point is
-- Uncertainty propagation: Clinically interpretable confidence intervals
-- Virtual cohort: Mechanistic robustness across parameter space
-
-DEPENDENCIES
-------------
-  numpy, scipy, matplotlib
-  (SALib NOT required — custom implementation provided)
-
-USAGE
------
-  python comprehensive_sensitivity_v4.py
-
-OUTPUT
-------
-  - comprehensive_sensitivity_v4.png  (main figure: multi-panel)
-  - sobol_results_v4.pkl              (raw Sobol indices)
-  - cohort_results_v4.pkl             (virtual infection cohort data)
-  - Console: full numerical results + statistical tests
+DEPENDENCIES: numpy, scipy, matplotlib
+USAGE:        python comprehensive_sensitivity_v4_lean.py
+OUTPUT:       comprehensive_sensitivity_v4_lean.png
 """
 
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.optimize import fsolve
 from scipy.linalg import eigvals
-from scipy.stats import qmc, norm, lognorm
-from sklearn.metrics import roc_auc_score
+from scipy.stats import qmc
 import warnings
 import time
-import pickle
-import os
+
 warnings.filterwarnings('ignore')
 
 # ============================================================
-# BASE PARAMETERS — Confirmed bistable set (Compendium v4, Sec 3.1)
+# BASE PARAMETERS — Confirmed bistable set (Compendium v4)
 # ============================================================
 BASE_PARAMS = {
     'r_S': 1.0, 'r_R': 0.93, 'K': 1e9, 'b': 2.0, 'b_R': 1.5,
@@ -91,22 +47,22 @@ BASE_PARAMS = {
 # PARAMETER UNCERTAINTY DISTRIBUTIONS
 # ============================================================
 PARAM_DISTRIBUTIONS = {
-    'r_S':     {'dist': 'normal',   'mean': 1.0,   'std': 0.15,      'unit': '1/hr'},
-    'r_R':     {'dist': 'normal',   'mean': 0.93,  'std': 0.12,      'unit': '1/hr'},
-    'b':       {'dist': 'normal',   'mean': 2.0,   'std': 0.4,       'unit': '1/hr'},
-    'b_R':     {'dist': 'normal',   'mean': 1.5,   'std': 0.3,       'unit': '1/hr'},
-    'MIC_S':   {'dist': 'lognormal','mean': 2.0,   'std': 0.5,       'unit': 'mg/L'},
-    'MIC_R':   {'dist': 'lognormal','mean': 4.0,   'std': 1.0,       'unit': 'mg/L'},
-    'n':       {'dist': 'normal',   'mean': 3.0,   'std': 0.5,       'unit': ''},
-    'c_R':     {'dist': 'normal',   'mean': 0.04,  'std': 0.01,      'unit': '1/hr'},
-    'K':       {'dist': 'lognormal','mean': 1e9,   'std': 3e8,       'unit': 'cells'},
-    'mu':      {'dist': 'normal',   'mean': 1.0,   'std': 0.2,       'unit': '1/hr'},
-    'eta':     {'dist': 'lognormal','mean': 2e-8,  'std': 5e-9,      'unit': 'L/(cell*hr)'},
-    'gamma':   {'dist': 'normal',   'mean': 1e-12, 'std': 3e-13,     'unit': '1/(cell*hr)'},
+    'r_S':     {'dist': 'normal',   'mean': 1.0,   'std': 0.15},
+    'r_R':     {'dist': 'normal',   'mean': 0.93,  'std': 0.12},
+    'b':       {'dist': 'normal',   'mean': 2.0,   'std': 0.4},
+    'b_R':     {'dist': 'normal',   'mean': 1.5,   'std': 0.3},
+    'MIC_S':   {'dist': 'lognormal','mean': 2.0,   'std': 0.5},
+    'MIC_R':   {'dist': 'lognormal','mean': 4.0,   'std': 1.0},
+    'n':       {'dist': 'normal',   'mean': 3.0,   'std': 0.5},
+    'c_R':     {'dist': 'normal',   'mean': 0.04,  'std': 0.01},
+    'K':       {'dist': 'lognormal','mean': 1e9,   'std': 3e8},
+    'mu':      {'dist': 'normal',   'mean': 1.0,   'std': 0.2},
+    'eta':     {'dist': 'lognormal','mean': 2e-8,  'std': 5e-9},
+    'gamma':   {'dist': 'normal',   'mean': 1e-12, 'std': 3e-13},
 }
 
 # ============================================================
-# SOBOL SAMPLING BOUNDS (±2σ for uniform Sobol space)
+# SOBOL SAMPLING BOUNDS
 # ============================================================
 SOBOL_BOUNDS = {}
 for name, d in PARAM_DISTRIBUTIONS.items():
@@ -155,22 +111,19 @@ def jacobian(state, I_val, p_dict):
     b = p_dict['b']; b_R = p_dict['b_R']
     MIC_S = p_dict['MIC_S']; MIC_R = p_dict['MIC_R']; n = p_dict['n']
     mu = p_dict['mu']; eta = p_dict['eta']; gamma = p_dict['gamma']
-    
-    # Guard: if state contains non-finite values, return zero Jacobian
+
     if not np.all(np.isfinite(state)):
         return np.zeros((3, 3))
-    
+
     g_S, g_R, g_bar = growth_rates(N, p, C, p_dict)
-    
-    # Guard: if C is near-zero, Hill derivatives blow up → return zero Jacobian
     eps = 1e-12
     if C < eps or not np.isfinite(C):
         return np.zeros((3, 3))
-    
+
     C_safe = max(C, eps)
     df_S_dC = n * (MIC_S**n) * C_safe**(n-1) / (C_safe**n + MIC_S**n)**2
     df_R_dC = n * (MIC_R**n) * C_safe**(n-1) / (C_safe**n + MIC_R**n)**2
-    
+
     dgS_dN = -r_S / K
     dgR_dN = -r_R / K
     dgS_dC = -b * df_S_dC
@@ -185,15 +138,10 @@ def jacobian(state, I_val, p_dict):
     J31 = -eta * p * C
     J32 = -eta * N * C
     J33 = -mu - eta * N * p
-    
-    J = np.array([[J11, J12, J13],
-                  [J21, J22, J23],
-                  [J31, J32, J33]])
-    
-    # Final guard: if any element is non-finite, return zero Jacobian
+
+    J = np.array([[J11, J12, J13], [J21, J22, J23], [J31, J32, J33]])
     if not np.all(np.isfinite(J)):
         return np.zeros((3, 3))
-    
     return J
 
 def is_stable(state, I_val, p_dict, tol=-1e-10):
@@ -307,11 +255,10 @@ def find_I_extinction_stable(p_dict, I_min=0.1, I_max=10.0, n_test=100):
     return None
 
 # ============================================================
-# SOBOL SAMPLING & ANALYSIS (SALib-independent)
+# SOBOL SAMPLING & ANALYSIS
 # ============================================================
 
 def generate_sobol_samples(n, bounds_dict, seed=42):
-    """Generate Saltelli-style samples for Sobol sensitivity analysis."""
     param_names = list(bounds_dict.keys())
     d = len(param_names)
     n_qmc = 2**int(np.ceil(np.log2(n)))
@@ -332,7 +279,6 @@ def generate_sobol_samples(n, bounds_dict, seed=42):
     return A, B, AB_dict, param_names
 
 def compute_sobol_indices(Y_A, Y_B, Y_AB_dict, param_names):
-    """Compute first-order (S1) and total-order (ST) Sobol indices."""
     n = len(Y_A)
     Y_all = np.concatenate([Y_A, Y_B])
     var_Y = np.var(Y_all, ddof=1)
@@ -347,7 +293,6 @@ def compute_sobol_indices(Y_A, Y_B, Y_AB_dict, param_names):
         Y_AB = Y_AB_dict[name]
         S1[name] = np.mean(Y_B * (Y_AB - Y_A)) / var_Y
         ST[name] = np.mean((Y_A - Y_AB)**2) / (2 * var_Y)
-    # Bootstrap confidence intervals
     n_boot = 1000
     rng = np.random.default_rng(42)
     S1_boot = {name: [] for name in param_names}
@@ -375,18 +320,16 @@ def compute_sobol_indices(Y_A, Y_B, Y_AB_dict, param_names):
     return S1, ST, S1_conf, ST_conf
 
 def params_dict_from_array(arr, param_names):
-    """Convert parameter array to dictionary."""
     p = BASE_PARAMS.copy()
     for i, name in enumerate(param_names):
         p[name] = float(arr[i])
     return p
 
 # ============================================================
-# ASI COMPUTATION MODULE
+# ASI COMPUTATION (minimal — no surrogate, no classical EWS)
 # ============================================================
 
 def simulate_trajectory(p_dict, I_val, t_max=500, dt=0.5, N0=None, p0=0.01, C0=None, noise_std=0.0, rng=None):
-    """Simulate 3D model trajectory under dosing rate I_val."""
     if rng is None:
         rng = np.random.default_rng()
     n_steps = int(t_max / dt)
@@ -416,148 +359,52 @@ def simulate_trajectory(p_dict, I_val, t_max=500, dt=0.5, N0=None, p0=0.01, C0=N
         C = np.maximum(C, 0)
     return t, N, p, C
 
-def compute_ews_indicators(t, N, p, C, window_frac=0.3):
-    """Compute classical early warning signals from trajectory."""
-    n = len(t)
-    start_idx = int(n * (1 - window_frac))
-    N_w = N[start_idx:]
-    p_w = p[start_idx:]
-    C_w = C[start_idx:]
-    def lag1_autocorr(x):
-        if len(x) < 2: return np.nan
-        x_c = x - np.mean(x)
-        denom = np.sum(x_c[:-1]**2)
-        if denom < 1e-15: return np.nan
-        return np.sum(x_c[:-1] * x_c[1:]) / denom
-    def skew(x):
-        if len(x) < 3: return np.nan
-        x_c = x - np.mean(x)
-        std = np.std(x, ddof=1)
-        if std < 1e-15: return np.nan
-        return np.mean(x_c**3) / std**3
-    def kurt(x):
-        if len(x) < 4: return np.nan
-        x_c = x - np.mean(x)
-        std = np.std(x, ddof=1)
-        if std < 1e-15: return np.nan
-        return np.mean(x_c**4) / std**4 - 3
-    return {
-        'variance_N': np.var(N_w, ddof=1),
-        'variance_p': np.var(p_w, ddof=1),
-        'variance_C': np.var(C_w, ddof=1),
-        'autocorr_N': lag1_autocorr(N_w),
-        'autocorr_p': lag1_autocorr(p_w),
-        'autocorr_C': lag1_autocorr(C_w),
-        'skewness_N': skew(N_w),
-        'skewness_p': skew(p_w),
-        'skewness_C': skew(C_w),
-        'kurtosis_N': kurt(N_w),
-        'kurtosis_p': kurt(p_w),
-        'kurtosis_C': kurt(C_w),
-        'cv_N': np.std(N_w, ddof=1) / (np.mean(N_w) + 1e-12),
-        'index_of_dispersion_N': np.var(N_w, ddof=1) / (np.mean(N_w) + 1e-12),
-    }
-
 def compute_asi(t, N, p, C, p_dict, I_val, window_frac=0.3):
-    """Compute ASI (Anticipated System Instability) indicator."""
     n = len(t)
     start_idx = int(n * (1 - window_frac))
     N_w = N[start_idx:]
     p_w = p[start_idx:]
     C_w = C[start_idx:]
-    
-    # Guard: if window has insufficient data or all zeros, return neutral
+
     if len(N_w) < 3 or np.mean(N_w) < 1e-6 or np.mean(C_w) < 1e-12:
-        return 0.0, {
-            'spectral_abscissa': 0.0,
-            'mean_dpdt': 0.0,
-            'fitness_diff': 0.0,
-            'curvature': 0.0,
-        }
-    
+        return 0.0
+
     state = np.array([np.mean(N_w), np.mean(p_w), np.mean(C_w)])
-    
-    # Guard: if state mean is non-finite, return neutral
     if not np.all(np.isfinite(state)):
-        return 0.0, {
-            'spectral_abscissa': 0.0,
-            'mean_dpdt': 0.0,
-            'fitness_diff': 0.0,
-            'curvature': 0.0,
-        }
-    
+        return 0.0
+
     J = jacobian(state, I_val, p_dict)
-    
-    # Guard: jacobian() now returns zero matrix on failure, but double-check
     if not np.all(np.isfinite(J)):
         spectral_abscissa = 0.0
-        stability_change = 0.0
     else:
         try:
             eigs = eigvals(J)
             spectral_abscissa = np.max(eigs.real)
         except (ValueError, np.linalg.LinAlgError):
             spectral_abscissa = 0.0
-        stability_change = spectral_abscissa
-    
+
     dpdt = np.gradient(p_w, t[1]-t[0])
     mean_dpdt = np.mean(np.abs(dpdt))
     g_S, g_R, g_bar = growth_rates(state[0], state[1], state[2], p_dict)
     fitness_diff = abs(g_R - g_S)
     d2pdt2 = np.gradient(dpdt, t[1]-t[0])
     curvature = np.mean(np.abs(d2pdt2))
-    
+
     sa_norm = -spectral_abscissa
     dpdt_norm = mean_dpdt * 1e6
     fd_norm = 1.0 / (fitness_diff + 0.01)
     curv_norm = curvature * 1e8
-    
+
     asi = 0.4 * sa_norm + 0.3 * dpdt_norm + 0.2 * fd_norm + 0.1 * curv_norm
-    
-    # Sanitize final output
     if not np.isfinite(asi):
         asi = 0.0
-    if not np.isfinite(spectral_abscissa):
-        spectral_abscissa = 0.0
-    if not np.isfinite(mean_dpdt):
-        mean_dpdt = 0.0
-    if not np.isfinite(fitness_diff):
-        fitness_diff = 0.0
-    if not np.isfinite(curvature):
-        curvature = 0.0
-    
-    return asi, {
-        'spectral_abscissa': spectral_abscissa,
-        'mean_dpdt': mean_dpdt,
-        'fitness_diff': fitness_diff,
-        'curvature': curvature,
-    }
-
-def compute_surrogate_asi(t, N, p, C, window_frac=0.3):
-    """Compute surrogate ASI using ONLY observable quantities."""
-    n = len(t)
-    start_idx = int(n * (1 - window_frac))
-    N_w = N[start_idx:]
-    p_w = p[start_idx:]
-    C_w = C[start_idx:]
-    var_N = np.var(N_w, ddof=1)
-    var_p = np.var(p_w, ddof=1)
-    dpdt = np.gradient(p_w, t[1]-t[0])
-    mean_dpdt = np.mean(np.abs(dpdt))
-    d2pdt2 = np.gradient(dpdt, t[1]-t[0])
-    curvature = np.mean(np.abs(d2pdt2))
-    trend_N = np.polyfit(range(len(N_w)), N_w, 1)[0]
-    surr_asi = (0.3 * np.log1p(var_N) + 0.3 * np.log1p(var_p) +
-                0.2 * mean_dpdt * 1e6 + 0.1 * curvature * 1e8 +
-                0.1 * np.abs(trend_N) * 1e-6)
-    return surr_asi
+    return asi
 
 # ============================================================
-# VIRTUAL INFECTION COHORT
+# VIRTUAL COHORT (minimal — ASI + extinction + params only)
 # ============================================================
 
 def sample_parameters_from_distributions(n_samples, seed=42):
-    """Sample parameter vectors from uncertainty distributions."""
     rng = np.random.default_rng(seed)
     params_list = []
     for _ in range(n_samples):
@@ -578,39 +425,30 @@ def sample_parameters_from_distributions(n_samples, seed=42):
         params_list.append(p)
     return params_list
 
-def evaluate_virtual_infection(p_dict, I_val, t_max=500, dt=0.5, noise_std=0.05, seed=None):
-    """Evaluate a single virtual infection under dosing I_val."""
+def evaluate_virtual_infection(p_dict, I_val, t_max=400, dt=1.0, noise_std=0.03, seed=None):
     rng = np.random.default_rng(seed)
     t, N, p, C = simulate_trajectory(p_dict, I_val, t_max=t_max, dt=dt, noise_std=noise_std, rng=rng)
     I2, status = find_I_transcritical(p_dict, I_min=0.5, I_max=25.0)
-    I1 = find_I_extinction_stable(p_dict)
-    ews = compute_ews_indicators(t, N, p, C)
-    asi_true, asi_components = compute_asi(t, N, p, C, p_dict, I_val)
-    asi_surrogate = compute_surrogate_asi(t, N, p, C)
+    asi_true = compute_asi(t, N, p, C, p_dict, I_val)
     extinct = (N[-1] < 0.01 * p_dict['K']) and (N[-1] < N[-10])
-    proximity = None
-    if I2 is not None and I2 > 0:
-        proximity = I_val / I2
     return {
-        'I_val': I_val, 'I2': I2, 'I2_status': status, 'I1': I1,
-        'extinct': extinct, 'final_N': N[-1], 'final_p': p[-1], 'final_C': C[-1],
-        'proximity': proximity, 'asi_true': asi_true, 'asi_surrogate': asi_surrogate,
-        'asi_components': asi_components, **ews
+        'I_val': I_val, 'I2': I2, 'extinct': extinct,
+        'asi_true': asi_true, 'eta': p_dict['eta'], 'MIC_S': p_dict['MIC_S']
     }
 
 # ============================================================
-# MAIN EXECUTION
+# MAIN
 # ============================================================
 
 def main():
     print("="*80)
-    print("COMPREHENSIVE PARAMETER SENSITIVITY ANALYSIS (v4 — Global + Uncertainty)")
+    print("COMPREHENSIVE PARAMETER SENSITIVITY ANALYSIS v4-lean")
     print("="*80)
 
     # -------------------------------------------------------------------------
-    # [1/6] BASELINE
+    # [1] BASELINE
     # -------------------------------------------------------------------------
-    print("\n[1/6] Computing baseline regime boundaries...")
+    print("\n[1/8] Computing baseline regime boundaries...")
     t0 = time.time()
     baseline_I2, baseline_status = find_I_transcritical(BASE_PARAMS, I_min=0.5, I_max=25.0)
     t_baseline = time.time() - t0
@@ -619,19 +457,14 @@ def main():
     if baseline_I2 is None:
         print(f"  BASELINE I*2: No coexistence found ({baseline_status})")
     else:
-        print(f"  BASELINE I*2 (transcritical): {baseline_I2:.4f} mg/L/hr  [{baseline_status}]  ({t_baseline:.1f}s)")
-        print(f"    -> Interior coexistence exists for I < {baseline_I2:.2f}")
+        print(f"  BASELINE I*2: {baseline_I2:.4f} mg/L/hr  [{baseline_status}]  ({t_baseline:.1f}s)")
     if baseline_I1 is not None:
-        print(f"  BASELINE I*1 (extinction stable): {baseline_I1:.4f} mg/L/hr")
+        print(f"  BASELINE I*1: {baseline_I1:.4f} mg/L/hr")
         if baseline_I2 is not None:
-            print(f"  BISTABLE TYPE 1 RANGE: I in [{baseline_I1:.2f}, {baseline_I2:.2f}]")
-    if baseline_I2 is not None:
-        expected_I2 = 11.6
-        discrepancy = abs(baseline_I2 - expected_I2) / expected_I2 * 100
-        print(f"  CROSS-CHECK: Compendium v4 predicts I*2 ~ {expected_I2:.1f}, discrepancy {discrepancy:.1f}%")
+            print(f"  BISTABLE RANGE: [{baseline_I1:.2f}, {baseline_I2:.2f}]")
 
     # -------------------------------------------------------------------------
-    # [2/6] OAT SWEEPS
+    # [2] OAT SWEEPS
     # -------------------------------------------------------------------------
     SENSITIVITY_CONFIG = [
         {'name': 'r_S',     'baseline': 1.0,   'range': [0.5, 0.75, 1.0, 1.25, 1.5],       'log': False, 'unit': '1/hr'},
@@ -647,7 +480,7 @@ def main():
         {'name': 'eta',     'baseline': 2e-8,  'range': [1e-12, 1e-10, 1e-9, 1e-8, 1e-7],  'log': True,  'unit': 'L/(cell*hr)'},
     ]
 
-    print(f"\n[2/6] Running OAT sensitivity sweeps ({len(SENSITIVITY_CONFIG)} parameters)...")
+    print(f"\n[2/8] OAT sensitivity sweeps ({len(SENSITIVITY_CONFIG)} parameters)...")
     print("-"*80)
     results_oat = {}
     for cfg in SENSITIVITY_CONFIG:
@@ -662,28 +495,20 @@ def main():
             I2, status = find_I_transcritical(p_dict, I_min=0.5, I_max=25.0)
             dt = time.time() - t0
             I2_vals.append(I2); statuses.append(status)
-            if I2 is None:
-                print(f"  {name}={val:12.4e}  ->  I*2=N/A  [{status:22s}]  ({dt:.1f}s)")
-            else:
-                if baseline_I2 is not None and baseline_I2 > 0 and cfg["baseline"] != 0:
-                    dI = (I2 - baseline_I2) / baseline_I2
-                    dp = (val - cfg["baseline"]) / cfg["baseline"]
-                    sens_idx = dI / dp if abs(dp) > 1e-10 else np.nan
-                else:
-                    sens_idx = np.nan
-                print(f"  {name}={val:12.4e}  ->  I*2={I2:8.3f}  [{status:10s}]  S={sens_idx:+.2f}  ({dt:.1f}s)")
+            crit_str = f"{I2:8.3f}" if I2 is not None else "   N/A"
+            print(f"  {name}={val:12.4e} -> I*2={crit_str} [{status:10s}] ({dt:.1f}s)")
         results_oat[name] = {
             "values": values, "I2": I2_vals, "statuses": statuses,
             "log": cfg["log"], "unit": cfg["unit"], "baseline": cfg["baseline"]
         }
 
     # -------------------------------------------------------------------------
-    # [3/6] TWO-PARAMETER INTERACTIONS
+    # [3] TWO-PARAMETER INTERACTIONS
     # -------------------------------------------------------------------------
-    print("\n[3/6] Running two-parameter interaction analyses...")
+    print("\n[3/8] Two-parameter interaction analyses...")
     print("-"*80)
 
-    print("\n  [3a] b vs b_R interaction...")
+    print("\n  [3a] b vs b_R...")
     b_range = [1.0, 1.5, 2.0, 2.5, 3.0]
     bR_range = [0.5, 1.0, 1.5, 2.0, 2.5]
     interaction_matrix_bbR = np.zeros((len(b_range), len(bR_range)))
@@ -695,10 +520,8 @@ def main():
             crit, status = find_I_transcritical(p_dict, I_min=0.5, I_max=25.0)
             interaction_matrix_bbR[i, j] = crit if crit is not None else np.nan
             interaction_status_bbR[i, j] = status
-            crit_str = f"{crit:.2f}" if crit is not None else "N/A"
-            print(f"    b={b_val:.1f}, b_R={bR_val:.1f} -> I*2={crit_str} [{status}]")
 
-    print("\n  [3b] eta vs mu interaction (structural)...")
+    print("\n  [3b] eta vs mu (structural)...")
     eta_range = [1e-10, 1e-9, 2e-8, 1e-7, 1e-6]
     mu_range = [0.5, 1.0, 2.0, 5.0, 10.0]
     interaction_matrix_etamu = np.zeros((len(eta_range), len(mu_range)))
@@ -710,25 +533,17 @@ def main():
             crit, status = find_I_transcritical(p_dict, I_min=0.5, I_max=50.0)
             interaction_matrix_etamu[i, j] = crit if crit is not None else np.nan
             interaction_status_etamu[i, j] = status
-            crit_str = f"{crit:.2f}" if crit is not None else "N/A"
-            print(f"    eta={eta_val:.0e}, mu={mu_val:.1f} -> I*2={crit_str} [{status}]")
 
     # -------------------------------------------------------------------------
-    # [4/6] GLOBAL SOBOL SENSITIVITY
+    # [4] GLOBAL SOBOL (I*2)
     # -------------------------------------------------------------------------
-    print("\n[4/6] Running GLOBAL Sobol sensitivity analysis...")
+    print("\n[4/8] Global Sobol sensitivity (I*2)...")
     print("-"*80)
-    print("NOTE: For full publication quality, increase N_SOBOL to 512 or 1024.")
-    print("      Current setting (N=128) balances rigor with runtime (~10-15 min).")
-    print("-"*80)
-
     N_SOBOL = 128
-    print(f"Generating Sobol samples: N={N_SOBOL} base samples x {len(SOBOL_BOUNDS)} parameters")
-    print(f"Total evaluations: {N_SOBOL * (len(SOBOL_BOUNDS) + 2)}")
+    print(f"N={N_SOBOL} base samples x {len(SOBOL_BOUNDS)} params")
 
     A, B, AB_dict, param_names = generate_sobol_samples(N_SOBOL, SOBOL_BOUNDS, seed=42)
 
-    # Cache for repeated evaluations
     _I2_cache = {}
     def find_I2_cached(p_dict):
         key = tuple(sorted((k, round(v, 12)) for k, v in p_dict.items()))
@@ -748,7 +563,7 @@ def main():
             else:
                 Y[i] = np.nan; valid[i] = False
             if (i+1) % 32 == 0 or i == len(M) - 1:
-                print(f"  {label}: {i+1}/{len(M)}  valid: {np.sum(valid)}  cache: {len(_I2_cache)}")
+                print(f"  {label}: {i+1}/{len(M)} valid:{np.sum(valid)} cache:{len(_I2_cache)}")
         return Y, valid
 
     Y_A, valid_A = eval_matrix(A, "A")
@@ -761,10 +576,9 @@ def main():
         valid_AB_all = valid_AB_all & valid_AB
 
     valid_all = valid_A & valid_B & valid_AB_all
-    print(f"\nValid samples for Sobol: {np.sum(valid_all)}/{N_SOBOL}")
+    print(f"\nValid Sobol samples: {np.sum(valid_all)}/{N_SOBOL}")
 
     if np.sum(valid_all) < 30:
-        print("WARNING: Too few valid samples! Using median imputation...")
         median_I2 = np.nanmedian(np.concatenate([Y_A, Y_B]))
         Y_A_clean = np.where(np.isnan(Y_A), median_I2, Y_A)
         Y_B_clean = np.where(np.isnan(Y_B), median_I2, Y_B)
@@ -777,37 +591,24 @@ def main():
     S1, ST, S1_conf, ST_conf = compute_sobol_indices(Y_A_clean, Y_B_clean, Y_AB_clean, param_names)
 
     print("\n" + "="*70)
-    print("GLOBAL SOBOL SENSITIVITY RESULTS — I*2 (Transcritical Point)")
+    print("SOBOL SENSITIVITY — I*2 (Transcritical Point)")
     print("="*70)
     print(f"{'Parameter':<10} {'S1':<10} {'S1 95% CI':<22} {'ST':<10} {'ST 95% CI':<22}")
     print("-"*70)
-    sobol_results = []
     for name in param_names:
         s1 = max(S1[name], 0.0)
         st = max(ST[name], 0.0)
         s1_lo, s1_hi = S1_conf[name]
         st_lo, st_hi = ST_conf[name]
         print(f"{name:<10} {s1:>8.4f}   [{max(s1_lo,0):>7.4f}, {s1_hi:>7.4f}]   {st:>8.4f}   [{max(st_lo,0):>7.4f}, {st_hi:>7.4f}]")
-        sobol_results.append({'param': name, 'S1': s1, 'ST': st,
-                              'S1_lo': max(s1_lo,0), 'S1_hi': s1_hi,
-                              'ST_lo': max(st_lo,0), 'ST_hi': st_hi})
-    sum_S1 = sum(max(S1[n], 0) for n in param_names)
-    print(f"\nSum S1: {sum_S1:.4f}  |  Sum ST: {sum(max(ST[n],0) for n in param_names):.4f}")
-
-    # Save Sobol results
-    with open('sobol_results_v4.pkl', 'wb') as f:
-        pickle.dump({'S1': S1, 'ST': ST, 'S1_conf': S1_conf, 'ST_conf': ST_conf,
-                     'param_names': param_names, 'sobol_results': sobol_results}, f)
-    print("Sobol results saved to sobol_results_v4.pkl")
+    print(f"\nSum S1: {sum(max(S1[n],0) for n in param_names):.4f}")
 
     # -------------------------------------------------------------------------
-    # [5/6] PARAMETER UNCERTAINTY PROPAGATION
+    # [5] UNCERTAINTY PROPAGATION
     # -------------------------------------------------------------------------
-    print("\n[5/6] Running parameter uncertainty propagation (Monte Carlo)...")
+    print("\n[5/8] Parameter uncertainty propagation (Monte Carlo)...")
     print("-"*80)
-
     N_MC = 500
-    print(f"Sampling {N_MC} parameter vectors from joint distributions...")
     params_mc = sample_parameters_from_distributions(N_MC, seed=123)
     I2_samples = []
     I1_samples = []
@@ -819,127 +620,39 @@ def main():
         if I1 is not None:
             I1_samples.append(I1)
         if (i+1) % 100 == 0:
-            print(f"  Progress: {i+1}/{N_MC}  I2 valid: {len(I2_samples)}  I1 valid: {len(I1_samples)}")
+            print(f"  {i+1}/{N_MC} I2:{len(I2_samples)} I1:{len(I1_samples)}")
 
     I2_samples = np.array(I2_samples)
     I1_samples = np.array(I1_samples)
 
     print("\n" + "="*60)
-    print("PARAMETER UNCERTAINTY PROPAGATION RESULTS")
+    print("UNCERTAINTY PROPAGATION")
     print("="*60)
     if len(I2_samples) > 0:
-        print(f"I*2 (transcritical):")
-        print(f"  Mean +/- SD:   {np.mean(I2_samples):.3f} +/- {np.std(I2_samples):.3f} mg/L/hr")
-        print(f"  Median:      {np.median(I2_samples):.3f} mg/L/hr")
-        print(f"  95% CI:      [{np.percentile(I2_samples, 2.5):.3f}, {np.percentile(I2_samples, 97.5):.3f}]")
-        print(f"  Range:       [{np.min(I2_samples):.3f}, {np.max(I2_samples):.3f}]")
-        print(f"  Valid/Total: {len(I2_samples)}/{N_MC}")
-    if len(I1_samples) > 0:
-        print(f"\nI*1 (extinction stable):")
-        print(f"  Mean +/- SD:   {np.mean(I1_samples):.3f} +/- {np.std(I1_samples):.3f} mg/L/hr")
-        print(f"  Median:      {np.median(I1_samples):.3f} mg/L/hr")
-        print(f"  95% CI:      [{np.percentile(I1_samples, 2.5):.3f}, {np.percentile(I1_samples, 97.5):.3f}]")
+        print(f"I*2: {np.mean(I2_samples):.3f} +/- {np.std(I2_samples):.3f}")
+        print(f"     95% CI: [{np.percentile(I2_samples,2.5):.3f}, {np.percentile(I2_samples,97.5):.3f}]")
+        print(f"     Range:  [{np.min(I2_samples):.3f}, {np.max(I2_samples):.3f}]")
 
     # -------------------------------------------------------------------------
-    # [6/6] VIRTUAL INFECTION COHORT — ASI vs CLASSICAL
+    # [6] SOBOL ON ASI
     # -------------------------------------------------------------------------
-    print("\n[6/6] Running virtual infection cohort (ASI biomarker validation)...")
+    print("\n[6/8] Global Sobol sensitivity (ASI magnitude)...")
     print("-"*80)
+    FIXED_I_ASI_SOBOL = 10.0
 
-    N_COHORT = 200  # Increase to 1000+ for publication
-    print(f"Simulating {N_COHORT} virtual infections with random parameters...")
-
-    rng = np.random.default_rng(999)
-    cohort_params = sample_parameters_from_distributions(N_COHORT, seed=999)
-    I_vals_cohort = rng.uniform(2.0, 20.0, N_COHORT)
-
-    cohort_results = []
-    for i in range(N_COHORT):
-        p_dict = cohort_params[i]
-        I_val = I_vals_cohort[i]
-        result = evaluate_virtual_infection(p_dict, I_val, t_max=400, dt=1.0, noise_std=0.03, seed=i)
-        cohort_results.append(result)
-        if (i+1) % 50 == 0:
-            print(f"  Progress: {i+1}/{N_COHORT}")
-
-    # Save cohort results
-    with open('cohort_results_v4.pkl', 'wb') as f:
-        pickle.dump(cohort_results, f)
-    print("Cohort results saved to cohort_results_v4.pkl")
-
-    # Statistical analysis
-    print("\n" + "="*70)
-    print("VIRTUAL INFECTION COHORT — ASI vs CLASSICAL EWS")
-    print("="*70)
-
-    asi_true_vals = np.array([r['asi_true'] for r in cohort_results])
-    asi_sur_vals = np.array([r['asi_surrogate'] for r in cohort_results])
-    var_N_vals = np.array([r['variance_N'] for r in cohort_results])
-    autocorr_N_vals = np.array([r['autocorr_N'] for r in cohort_results])
-    cv_N_vals = np.array([r['cv_N'] for r in cohort_results])
-    extinct_vals = np.array([r['extinct'] for r in cohort_results])
-
-    # Correlation: ASI_true vs ASI_surrogate
-    valid_corr = ~np.isnan(asi_true_vals) & ~np.isnan(asi_sur_vals)
-    if np.sum(valid_corr) > 10:
-        corr_as = np.corrcoef(asi_true_vals[valid_corr], asi_sur_vals[valid_corr])[0, 1]
-        print(f"\nCorrelation(ASI_true, ASI_surrogate): {corr_as:.4f}")
-        print(f"  -> {'STRONG' if abs(corr_as) > 0.7 else 'MODERATE' if abs(corr_as) > 0.4 else 'WEAK'} agreement")
-
-    # Classification: can ASI predict extinction better than variance?
-    def safe_auc(y_true, y_score):
-        valid = ~np.isnan(y_score)
-        if np.sum(valid) < 10 or len(np.unique(y_true[valid])) < 2:
-            return np.nan
-        return roc_auc_score(y_true[valid], y_score[valid])
-
-    auc_asi_true = safe_auc(extinct_vals, asi_true_vals)
-    auc_asi_sur = safe_auc(extinct_vals, asi_sur_vals)
-    auc_var = safe_auc(extinct_vals, var_N_vals)
-    auc_autocorr = safe_auc(extinct_vals, autocorr_N_vals)
-    auc_cv = safe_auc(extinct_vals, cv_N_vals)
-
-    print(f"\nAUC (extinction prediction):")
-    print(f"  ASI (true):       {auc_asi_true:.4f}" if not np.isnan(auc_asi_true) else "  ASI (true):       N/A")
-    print(f"  ASI (surrogate):  {auc_asi_sur:.4f}" if not np.isnan(auc_asi_sur) else "  ASI (surrogate):  N/A")
-    print(f"  Variance(N):      {auc_var:.4f}" if not np.isnan(auc_var) else "  Variance(N):      N/A")
-    print(f"  Autocorr(N):      {auc_autocorr:.4f}" if not np.isnan(auc_autocorr) else "  Autocorr(N):      N/A")
-    print(f"  CV(N):            {auc_cv:.4f}" if not np.isnan(auc_cv) else "  CV(N):            N/A")
-
-    # Proximity correlation
-    valid_prox = ~np.isnan(asi_true_vals)
-    prox_subset = np.array([r['proximity'] if r['proximity'] is not None else np.nan for r in cohort_results])
-    valid_p = ~np.isnan(prox_subset) & ~np.isnan(asi_true_vals)
-    if np.sum(valid_p) > 10:
-        corr_prox = np.corrcoef(asi_true_vals[valid_p], prox_subset[valid_p])[0, 1]
-        print(f"\nCorrelation(ASI_true, proximity_to_tipping): {corr_prox:.4f}")
-        print(f"  -> {'STRONG' if abs(corr_prox) > 0.7 else 'MODERATE' if abs(corr_prox) > 0.4 else 'WEAK'} predictive signal")
-
-    print(f"\nExtinction rate in cohort: {np.mean(extinct_vals)*100:.1f}% ({np.sum(extinct_vals)}/{len(extinct_vals)})")
-
-    # -------------------------------------------------------------------------
-    # [7/10] SOBOL SENSITIVITY OF ASI ITSELF
-    # -------------------------------------------------------------------------
-    print("\n[7/10] Running GLOBAL Sobol sensitivity of ASI biomarker...")
-    print("-"*80)
-    
-    FIXED_I_ASI_SOBOL = 10.0  # Evaluate ASI at clinically relevant dosing
-    
     def eval_asi_matrix(M, label):
         Y = np.zeros(len(M))
         valid = np.ones(len(M), dtype=bool)
         for i in range(len(M)):
             p_dict = params_dict_from_array(M[i], param_names)
-            # Simulate short trajectory to get state for ASI
             t, N, p, C = simulate_trajectory(p_dict, FIXED_I_ASI_SOBOL, t_max=200, dt=1.0, noise_std=0.03, rng=np.random.default_rng(i))
-            asi_true, _ = compute_asi(t, N, p, C, p_dict, FIXED_I_ASI_SOBOL)
+            asi_true = compute_asi(t, N, p, C, p_dict, FIXED_I_ASI_SOBOL)
             if np.isfinite(asi_true):
                 Y[i] = np.log1p(asi_true)
             else:
-                Y[i] = np.nan
-                valid[i] = False
+                Y[i] = np.nan; valid[i] = False
             if (i+1) % 32 == 0 or i == len(M) - 1:
-                print(f"  {label}: {i+1}/{len(M)}  valid: {np.sum(valid)}")
+                print(f"  {label}: {i+1}/{len(M)} valid:{np.sum(valid)}")
         return Y, valid
 
     Y_A_asi, valid_A_asi = eval_asi_matrix(A, "A_asi")
@@ -952,10 +665,9 @@ def main():
         valid_AB_asi_all = valid_AB_asi_all & valid_AB_asi
 
     valid_asi_all = valid_A_asi & valid_B_asi & valid_AB_asi_all
-    print(f"\nValid ASI samples for Sobol: {np.sum(valid_asi_all)}/{N_SOBOL}")
+    print(f"\nValid ASI samples: {np.sum(valid_asi_all)}/{N_SOBOL}")
 
     if np.sum(valid_asi_all) < 30:
-        print("WARNING: Too few valid ASI samples! Using median imputation...")
         median_asi = np.nanmedian(np.concatenate([Y_A_asi, Y_B_asi]))
         Y_A_asi_clean = np.where(np.isnan(Y_A_asi), median_asi, Y_A_asi)
         Y_B_asi_clean = np.where(np.isnan(Y_B_asi), median_asi, Y_B_asi)
@@ -968,294 +680,120 @@ def main():
     S1_asi, ST_asi, S1_asi_conf, ST_asi_conf = compute_sobol_indices(Y_A_asi_clean, Y_B_asi_clean, Y_AB_asi_clean, param_names)
 
     print("\n" + "="*70)
-    print(f"GLOBAL SOBOL SENSITIVITY — ASI (at I={FIXED_I_ASI_SOBOL})")
+    print(f"SOBOL SENSITIVITY — ASI (at I={FIXED_I_ASI_SOBOL})")
     print("="*70)
-    print(f"{'Parameter':<<10} {'S1':<<10} {'S1 95% CI':<<22} {'ST':<<10} {'ST 95% CI':<<22}")
+    print(f"{'Parameter':<10} {'S1':<10} {'S1 95% CI':<22} {'ST':<10} {'ST 95% CI':<22}")
     print("-"*70)
-    sobol_asi_results = []
     for name in param_names:
         s1 = max(S1_asi[name], 0.0)
         st = max(ST_asi[name], 0.0)
         s1_lo, s1_hi = S1_asi_conf[name]
         st_lo, st_hi = ST_asi_conf[name]
         print(f"{name:<10} {s1:>8.4f}   [{max(s1_lo,0):>7.4f}, {s1_hi:>7.4f}]   {st:>8.4f}   [{max(st_lo,0):>7.4f}, {st_hi:>7.4f}]")
-        sobol_asi_results.append({'param': name, 'S1': s1, 'ST': st,
-                                  'S1_lo': max(s1_lo,0), 'S1_hi': s1_hi,
-                                  'ST_lo': max(st_lo,0), 'ST_hi': st_hi})
-    sum_S1_asi = sum(max(S1_asi[n], 0) for n in param_names)
-    print(f"\nSum S1: {sum_S1_asi:.4f}  |  Sum ST: {sum(max(ST_asi[n],0) for n in param_names):.4f}")
+    print(f"\nSum S1: {sum(max(S1_asi[n],0) for n in param_names):.4f}")
 
     # -------------------------------------------------------------------------
-    # [8/10] ASI UNCERTAINTY PROPAGATION
+    # [7] ASI UNCERTAINTY AT FIXED I
     # -------------------------------------------------------------------------
-    print("\n[8/10] Running ASI uncertainty propagation...")
+    print("\n[7/8] ASI uncertainty propagation at fixed I...")
     print("-"*80)
-
     ASI_I_LEVELS = [5.0, 10.0, 15.0]
     asi_uncertainty_results = {}
-    
+
     for I_test in ASI_I_LEVELS:
-        print(f"\n  Evaluating ASI at I={I_test:.1f} across {N_MC} MC samples...")
+        print(f"\n  I={I_test:.1f} across {N_MC} samples...")
         asi_samples = []
         for i, p_dict in enumerate(params_mc):
             t, N, p, C = simulate_trajectory(p_dict, I_test, t_max=200, dt=1.0, noise_std=0.03, rng=np.random.default_rng(i+10000))
-            asi_true, _ = compute_asi(t, N, p, C, p_dict, I_test)
+            asi_true = compute_asi(t, N, p, C, p_dict, I_test)
             if np.isfinite(asi_true):
                 asi_samples.append(asi_true)
             if (i+1) % 100 == 0:
-                print(f"    Progress: {i+1}/{N_MC}  ASI valid: {len(asi_samples)}")
-        
+                print(f"    {i+1}/{N_MC} valid:{len(asi_samples)}")
         asi_samples = np.array(asi_samples)
         asi_uncertainty_results[I_test] = asi_samples
-        
-        print(f"\n  ASI at I={I_test:.1f}:")
-        print(f"    Mean +/- SD:   {np.mean(asi_samples):.4f} +/- {np.std(asi_samples):.4f}")
-        print(f"    Median:        {np.median(asi_samples):.4f}")
-        print(f"    95% CI:        [{np.percentile(asi_samples, 2.5):.4f}, {np.percentile(asi_samples, 97.5):.4f}]")
-        print(f"    Range:         [{np.min(asi_samples):.4f}, {np.max(asi_samples):.4f}]")
-        print(f"    Valid/Total:   {len(asi_samples)}/{N_MC}")
+        print(f"  Mean: {np.mean(asi_samples):.4f} +/- {np.std(asi_samples):.4f}")
+        print(f"  95% CI: [{np.percentile(asi_samples,2.5):.4f}, {np.percentile(asi_samples,97.5):.4f}]")
 
     # -------------------------------------------------------------------------
-    # [9/10] STRATIFIED ASI PERFORMANCE
+    # [8] VIRTUAL COHORT — STRATIFIED ONLY
     # -------------------------------------------------------------------------
-    print("\n[9/10] Stratified ASI performance by parameter regime...")
+    print("\n[8/8] Virtual cohort (regime-stratified ASI performance)...")
     print("-"*80)
 
-    # Add parameter values to cohort results for stratification
-    cohort_with_params = []
-    for i, result in enumerate(cohort_results):
-        result_copy = result.copy()
-        result_copy['eta'] = cohort_params[i]['eta']
-        result_copy['MIC_S'] = cohort_params[i]['MIC_S']
-        result_copy['K'] = cohort_params[i]['K']
-        cohort_with_params.append(result_copy)
+    N_COHORT = 200
+    rng = np.random.default_rng(999)
+    cohort_params = sample_parameters_from_distributions(N_COHORT, seed=999)
+    I_vals_cohort = rng.uniform(2.0, 20.0, N_COHORT)
 
-    # Define strata based on dominant Sobol parameters
-    eta_median = np.median([r['eta'] for r in cohort_with_params])
-    MIC_S_median = np.median([r['MIC_S'] for r in cohort_with_params])
+    cohort_results = []
+    for i in range(N_COHORT):
+        result = evaluate_virtual_infection(cohort_params[i], I_vals_cohort[i], t_max=400, dt=1.0, noise_std=0.03, seed=i)
+        cohort_results.append(result)
+        if (i+1) % 50 == 0:
+            print(f"  {i+1}/{N_COHORT}")
+
+    # Stratification
+    eta_median = np.median([r['eta'] for r in cohort_results])
+    MIC_S_median = np.median([r['MIC_S'] for r in cohort_results])
 
     strata = {
-        'Low_eta_Low_MIC':  [r for r in cohort_with_params if r['eta'] <= eta_median and r['MIC_S'] <= MIC_S_median],
-        'Low_eta_High_MIC': [r for r in cohort_with_params if r['eta'] <= eta_median and r['MIC_S'] > MIC_S_median],
-        'High_eta_Low_MIC': [r for r in cohort_with_params if r['eta'] > eta_median and r['MIC_S'] <= MIC_S_median],
-        'High_eta_High_MIC':[r for r in cohort_with_params if r['eta'] > eta_median and r['MIC_S'] > MIC_S_median],
+        'Low_η_Low_MIC':  [r for r in cohort_results if r['eta'] <= eta_median and r['MIC_S'] <= MIC_S_median],
+        'Low_η_High_MIC': [r for r in cohort_results if r['eta'] <= eta_median and r['MIC_S'] > MIC_S_median],
+        'High_η_Low_MIC': [r for r in cohort_results if r['eta'] > eta_median and r['MIC_S'] <= MIC_S_median],
+        'High_η_High_MIC':[r for r in cohort_results if r['eta'] > eta_median and r['MIC_S'] > MIC_S_median],
     }
 
-    print(f"\n  Cohort stratification (median eta={eta_median:.2e}, median MIC_S={MIC_S_median:.2f}):")
+    print(f"\nStratification (η_med={eta_median:.2e}, MIC_S_med={MIC_S_median:.2f}):")
     for name, subset in strata.items():
-        if len(subset) < 10:
-            print(f"    {name:20s}: n={len(subset):3d} — insufficient for AUC")
-            continue
-        
-        asi_vals = np.array([r['asi_true'] for r in subset])
-        ext_vals = np.array([r['extinct'] for r in subset])
-        prox_vals = np.array([r['proximity'] if r['proximity'] is not None else np.nan for r in subset])
-        
-        valid_auc = ~np.isnan(asi_vals)
-        auc_strat = safe_auc(ext_vals, asi_vals) if np.sum(valid_auc) >= 10 and len(np.unique(ext_vals[valid_auc])) >= 2 else np.nan
-        
-        valid_prox = ~np.isnan(asi_vals) & ~np.isnan(prox_vals)
-        corr_strat = np.corrcoef(asi_vals[valid_prox], prox_vals[valid_prox])[0,1] if np.sum(valid_prox) >= 10 else np.nan
-        
-        print(f"    {name:20s}: n={len(subset):3d}  AUC={auc_strat:.3f}  corr(ASI,prox)={corr_strat:.3f}")
-
-    # -------------------------------------------------------------------------
-    # [10/10] ASI COMPONENTS vs CLASSICAL EWS CORRELATIONS
-    # -------------------------------------------------------------------------
-    print("\n[10/10] ASI components vs classical EWS correlations...")
-    print("-"*80)
-
-    # Extract ASI components from cohort
-    sa_vals = np.array([r['asi_components']['spectral_abscissa'] for r in cohort_results])
-    dpdt_vals = np.array([r['asi_components']['mean_dpdt'] for r in cohort_results])
-    fd_vals = np.array([r['asi_components']['fitness_diff'] for r in cohort_results])
-    curv_vals = np.array([r['asi_components']['curvature'] for r in cohort_results])
-
-    classical_vars = {
-        'variance_N': var_N_vals,
-        'autocorr_N': autocorr_N_vals,
-        'cv_N': cv_N_vals,
-        'variance_p': np.array([r['variance_p'] for r in cohort_results]),
-        'skewness_N': np.array([r['skewness_N'] for r in cohort_results]),
-    }
-
-    asi_components = {
-        'spectral_abscissa': sa_vals,
-        'mean_dpdt': dpdt_vals,
-        'fitness_diff': fd_vals,
-        'curvature': curv_vals,
-        'asi_true': asi_true_vals,
-    }
-
-    print(f"\n  Correlation matrix (ASI components × classical EWS):")
-    print(f"  {'Component':<<18} {'Classical EWS':<<18} {'Corr':>8} {'N valid':>8}")
-    print("  " + "-"*60)
-    corr_matrix = []
-    for comp_name, comp_vals in asi_components.items():
-        for ews_name, ews_vals in classical_vars.items():
-            valid_both = ~np.isnan(comp_vals) & ~np.isnan(ews_vals)
-            if np.sum(valid_both) >= 10:
-                c = np.corrcoef(comp_vals[valid_both], ews_vals[valid_both])[0,1]
-                print(f"  {comp_name:<18} {ews_name:<18} {c:>8.3f} {np.sum(valid_both):>8d}")
-                corr_matrix.append({
-                    'asi_component': comp_name,
-                    'classical_ews': ews_name,
-                    'correlation': c,
-                    'n': np.sum(valid_both)
-                })
-            else:
-                print(f"  {comp_name:<18} {ews_name:<18} {'N/A':>8} {np.sum(valid_both):>8d}")
+        print(f"  {name:20s}: n={len(subset):3d}")
 
     # -------------------------------------------------------------------------
     # PLOTTING
     # -------------------------------------------------------------------------
-    print("\nGenerating figures...")
-    fig = plt.figure(figsize=(22, 32))
-    gs = fig.add_gridspec(8, 4, hspace=0.45, wspace=0.4)
+    print("\nGenerating figure...")
+    fig = plt.figure(figsize=(20, 24))
+    gs = fig.add_gridspec(6, 4, hspace=0.45, wspace=0.4)
 
-    # Row 0: OAT sweeps (first 4 parameters)
+    # Helper for OAT plots
+    def plot_oat(ax, name, data):
+        vals = np.array(data["values"], dtype=float)
+        I2s = np.array(data["I2"], dtype=float)
+        statuses = data["statuses"]
+        x_s, y_s, x_e, y_e, x_f, y_f = [], [], [], [], [], []
+        for v, t, s in zip(vals, I2s, statuses):
+            if s == "success": x_s.append(v); y_s.append(t)
+            elif s == "extends_beyond_range": x_e.append(v); y_e.append(t)
+            else: x_f.append(v); y_f.append(t)
+        vm = np.array([s in ["success", "extends_beyond_range"] for s in statuses])
+        if np.any(vm):
+            if data["log"]: ax.semilogx(vals[vm], I2s[vm], "-", color="steelblue", linewidth=2, zorder=1)
+            else: ax.plot(vals[vm], I2s[vm], "-", color="steelblue", linewidth=2, zorder=1)
+        if x_s: ax.scatter(x_s, y_s, c="blue", s=40, zorder=3)
+        if x_e: ax.scatter(x_e, y_e, c="green", s=40, marker="^", zorder=3)
+        if x_f: ax.scatter(x_f, y_f, c="red", s=40, marker="x", zorder=3)
+        if baseline_I2 is not None: ax.axhline(y=baseline_I2, color="crimson", linestyle="--", alpha=0.6, linewidth=1)
+        ax.axvline(x=data["baseline"], color="gray", linestyle=":", alpha=0.5, linewidth=1)
+        ax.set_xlabel(f"{name} ({data['unit']})", fontsize=9)
+        ax.set_ylabel("I*2", fontsize=9)
+        ax.set_title(f"OAT: {name}", fontsize=10, fontweight="bold")
+        ax.grid(True, alpha=0.3)
+        ax.tick_params(labelsize=8)
+
+    # Row 0: OAT 1-4
     oat_names = list(results_oat.keys())
     for idx in range(min(4, len(oat_names))):
-        name = oat_names[idx]
-        data = results_oat[name]
-        ax = fig.add_subplot(gs[0, idx])
-        vals = np.array(data["values"], dtype=float)
-        I2s = np.array(data["I2"], dtype=float)
-        statuses = data["statuses"]
-        x_s, y_s, x_e, y_e, x_f, y_f = [], [], [], [], [], []
-        for v, t, s in zip(vals, I2s, statuses):
-            if s == "success": x_s.append(v); y_s.append(t)
-            elif s == "extends_beyond_range": x_e.append(v); y_e.append(t)
-            else: x_f.append(v); y_f.append(t)
-        vm = np.array([s in ["success", "extends_beyond_range"] for s in statuses])
-        if np.any(vm):
-            if data["log"]: ax.semilogx(vals[vm], I2s[vm], "-", color="steelblue", linewidth=2, zorder=1)
-            else: ax.plot(vals[vm], I2s[vm], "-", color="steelblue", linewidth=2, zorder=1)
-        if x_s: ax.scatter(x_s, y_s, c="blue", s=40, zorder=3)
-        if x_e: ax.scatter(x_e, y_e, c="green", s=40, marker="^", zorder=3)
-        if x_f: ax.scatter(x_f, y_f, c="red", s=40, marker="x", zorder=3)
-        if baseline_I2 is not None: ax.axhline(y=baseline_I2, color="crimson", linestyle="--", alpha=0.6, linewidth=1)
-        ax.axvline(x=data["baseline"], color="gray", linestyle=":", alpha=0.5, linewidth=1)
-        ax.set_xlabel(f"{name} ({data['unit']})", fontsize=9)
-        ax.set_ylabel("I*2", fontsize=9)
-        ax.set_title(f"OAT: {name}", fontsize=10, fontweight="bold")
-        ax.grid(True, alpha=0.3)
-        ax.tick_params(labelsize=8)
+        plot_oat(fig.add_subplot(gs[0, idx]), oat_names[idx], results_oat[oat_names[idx]])
 
-    # Row 1: OAT sweeps (next 4 parameters)
+    # Row 1: OAT 5-8
     for idx in range(4, min(8, len(oat_names))):
-        name = oat_names[idx]
-        data = results_oat[name]
-        ax = fig.add_subplot(gs[1, idx-4])
-        vals = np.array(data["values"], dtype=float)
-        I2s = np.array(data["I2"], dtype=float)
-        statuses = data["statuses"]
-        x_s, y_s, x_e, y_e, x_f, y_f = [], [], [], [], [], []
-        for v, t, s in zip(vals, I2s, statuses):
-            if s == "success": x_s.append(v); y_s.append(t)
-            elif s == "extends_beyond_range": x_e.append(v); y_e.append(t)
-            else: x_f.append(v); y_f.append(t)
-        vm = np.array([s in ["success", "extends_beyond_range"] for s in statuses])
-        if np.any(vm):
-            if data["log"]: ax.semilogx(vals[vm], I2s[vm], "-", color="steelblue", linewidth=2, zorder=1)
-            else: ax.plot(vals[vm], I2s[vm], "-", color="steelblue", linewidth=2, zorder=1)
-        if x_s: ax.scatter(x_s, y_s, c="blue", s=40, zorder=3)
-        if x_e: ax.scatter(x_e, y_e, c="green", s=40, marker="^", zorder=3)
-        if x_f: ax.scatter(x_f, y_f, c="red", s=40, marker="x", zorder=3)
-        if baseline_I2 is not None: ax.axhline(y=baseline_I2, color="crimson", linestyle="--", alpha=0.6, linewidth=1)
-        ax.axvline(x=data["baseline"], color="gray", linestyle=":", alpha=0.5, linewidth=1)
-        ax.set_xlabel(f"{name} ({data['unit']})", fontsize=9)
-        ax.set_ylabel("I*2", fontsize=9)
-        ax.set_title(f"OAT: {name}", fontsize=10, fontweight="bold")
-        ax.grid(True, alpha=0.3)
-        ax.tick_params(labelsize=8)
+        plot_oat(fig.add_subplot(gs[1, idx-4]), oat_names[idx], results_oat[oat_names[idx]])
 
-        # Row 2: OAT sweeps (remaining 3 parameters)
+    # Row 2: OAT 9-11 + b×b_R interaction
     for idx in range(8, len(oat_names)):
-        name = oat_names[idx]
-        data = results_oat[name]
-        ax = fig.add_subplot(gs[2, idx-8])
-        vals = np.array(data["values"], dtype=float)
-        I2s = np.array(data["I2"], dtype=float)
-        statuses = data["statuses"]
-        x_s, y_s, x_e, y_e, x_f, y_f = [], [], [], [], [], []
-        for v, t, s in zip(vals, I2s, statuses):
-            if s == "success": x_s.append(v); y_s.append(t)
-            elif s == "extends_beyond_range": x_e.append(v); y_e.append(t)
-            else: x_f.append(v); y_f.append(t)
-        vm = np.array([s in ["success", "extends_beyond_range"] for s in statuses])
-        if np.any(vm):
-            if data["log"]: ax.semilogx(vals[vm], I2s[vm], "-", color="steelblue", linewidth=2, zorder=1)
-            else: ax.plot(vals[vm], I2s[vm], "-", color="steelblue", linewidth=2, zorder=1)
-        if x_s: ax.scatter(x_s, y_s, c="blue", s=40, zorder=3)
-        if x_e: ax.scatter(x_e, y_e, c="green", s=40, marker="^", zorder=3)
-        if x_f: ax.scatter(x_f, y_f, c="red", s=40, marker="x", zorder=3)
-        if baseline_I2 is not None: ax.axhline(y=baseline_I2, color="crimson", linestyle="--", alpha=0.6, linewidth=1)
-        ax.axvline(x=data["baseline"], color="gray", linestyle=":", alpha=0.5, linewidth=1)
-        ax.set_xlabel(f"{name} ({data['unit']})", fontsize=9)
-        ax.set_ylabel("I*2", fontsize=9)
-        ax.set_title(f"OAT: {name}", fontsize=10, fontweight="bold")
-        ax.grid(True, alpha=0.3)
-        ax.tick_params(labelsize=8)
+        plot_oat(fig.add_subplot(gs[2, idx-8]), oat_names[idx], results_oat[oat_names[idx]])
 
-    # Row 2, col 0: Sobol S1 bar chart
-    ax = fig.add_subplot(gs[3, 0])
-    names_sorted = sorted(param_names, key=lambda n: S1[n], reverse=True)
-    s1_vals = [max(S1[n], 0) for n in names_sorted]
-    s1_err_lo = [max(S1[n] - S1_conf[n][0], 0) for n in names_sorted]
-    s1_err_hi = [max(S1_conf[n][1] - S1[n], 0) for n in names_sorted]
-    y_pos = np.arange(len(names_sorted))
-    ax.barh(y_pos, s1_vals, xerr=[s1_err_lo, s1_err_hi], color='steelblue', alpha=0.8, capsize=3)
-    ax.set_yticks(y_pos)
-    ax.set_yticklabels(names_sorted, fontsize=8)
-    ax.set_xlabel("First-order Sobol Index (S1)", fontsize=9)
-    ax.set_title("Global Sensitivity: S1", fontsize=10, fontweight="bold")
-    ax.axvline(x=0, color='black', linewidth=0.5)
-    ax.grid(True, alpha=0.3, axis='x')
-    ax.invert_yaxis()
-
-    # Row 2, col 1: Sobol ST bar chart
-    ax = fig.add_subplot(gs[3, 1])
-    names_sorted_st = sorted(param_names, key=lambda n: ST[n], reverse=True)
-    st_vals = [max(ST[n], 0) for n in names_sorted_st]
-    st_err_lo = [max(ST[n] - ST_conf[n][0], 0) for n in names_sorted_st]
-    st_err_hi = [max(ST_conf[n][1] - ST[n], 0) for n in names_sorted_st]
-    y_pos = np.arange(len(names_sorted_st))
-    ax.barh(y_pos, st_vals, xerr=[st_err_lo, st_err_hi], color='darkorange', alpha=0.8, capsize=3)
-    ax.set_yticks(y_pos)
-    ax.set_yticklabels(names_sorted_st, fontsize=8)
-    ax.set_xlabel("Total-order Sobol Index (ST)", fontsize=9)
-    ax.set_title("Global Sensitivity: ST", fontsize=10, fontweight="bold")
-    ax.axvline(x=0, color='black', linewidth=0.5)
-    ax.grid(True, alpha=0.3, axis='x')
-    ax.invert_yaxis()
-
-    # Row 2, col 2: Uncertainty propagation histogram
-    ax = fig.add_subplot(gs[3, 2])
-    if len(I2_samples) > 0:
-        ax.hist(I2_samples, bins=30, color='seagreen', alpha=0.7, edgecolor='black')
-        ax.axvline(x=np.mean(I2_samples), color='darkred', linestyle='--', linewidth=2, label=f"Mean: {np.mean(I2_samples):.2f}")
-        ax.axvline(x=np.median(I2_samples), color='navy', linestyle=':', linewidth=2, label=f"Median: {np.median(I2_samples):.2f}")
-        ax.axvline(x=baseline_I2, color='crimson', linestyle='-', linewidth=2, label=f"Baseline: {baseline_I2:.2f}")
-        ax.set_xlabel("I*2 (mg/L/hr)", fontsize=9)
-        ax.set_ylabel("Frequency", fontsize=9)
-        ax.set_title(f"Uncertainty Propagation\n(N={len(I2_samples)}, 95% CI: [{np.percentile(I2_samples,2.5):.1f}, {np.percentile(I2_samples,97.5):.1f}])", fontsize=10, fontweight="bold")
-        ax.legend(fontsize=7)
-        ax.grid(True, alpha=0.3)
-
-    # Row 2, col 3: ASI vs Classical scatter
-    ax = fig.add_subplot(gs[3, 3])
-    valid_scatter = ~np.isnan(asi_true_vals) & ~np.isnan(var_N_vals) & ~np.isnan(autocorr_N_vals)
-    if np.sum(valid_scatter) > 10:
-        ax.scatter(var_N_vals[valid_scatter], asi_true_vals[valid_scatter], c='blue', alpha=0.5, s=20, label='ASI vs Var(N)')
-        ax.set_xlabel("Variance(N)", fontsize=9)
-        ax.set_ylabel("ASI (true)", fontsize=9)
-        ax.set_title("ASI vs Classical EWS", fontsize=10, fontweight="bold")
-        ax.grid(True, alpha=0.3)
-        ax.legend(fontsize=8)
-
-    # Row 3, col 0: Interaction heatmap b vs b_R
-    ax = fig.add_subplot(gs[4, 0])
+    ax = fig.add_subplot(gs[2, 3])
     im1 = ax.imshow(interaction_matrix_bbR, cmap="RdYlGn_r", aspect="auto",
                     vmin=np.nanmin(interaction_matrix_bbR), vmax=np.nanmax(interaction_matrix_bbR))
     ax.set_xticks(range(len(bR_range)))
@@ -1264,16 +802,16 @@ def main():
     ax.set_yticklabels([f"{v:.1f}" for v in b_range], fontsize=8)
     ax.set_xlabel("b_R", fontsize=10)
     ax.set_ylabel("b", fontsize=10)
-    ax.set_title("Interaction: b vs b_R\n(pharmacological)", fontsize=10, fontweight="bold")
+    ax.set_title("Interaction: b vs b_R", fontsize=10, fontweight="bold")
     cbar1 = plt.colorbar(im1, ax=ax, shrink=0.8)
     cbar1.set_label("I*2", fontsize=9)
     for i in range(len(b_range)):
         for j in range(len(bR_range)):
             if not np.isnan(interaction_matrix_bbR[i, j]):
-                ax.text(j, i, f"{interaction_matrix_bbR[i,j]:.1f}", ha="center", va="center", fontsize=7, color="black")
+                ax.text(j, i, f"{interaction_matrix_bbR[i,j]:.1f}", ha="center", va="center", fontsize=7)
 
-    # Row 3, col 1: Interaction heatmap eta vs mu
-    ax = fig.add_subplot(gs[4, 1])
+    # Row 3: eta×mu + Sobol I*2 + MC uncertainty
+    ax = fig.add_subplot(gs[3, 0])
     cmap = plt.cm.RdYlGn_r.copy()
     cmap.set_bad('lightgray')
     im2 = ax.imshow(interaction_matrix_etamu, cmap=cmap, aspect="auto",
@@ -1284,124 +822,101 @@ def main():
     ax.set_yticklabels([f"{v:.0e}" for v in eta_range], fontsize=7)
     ax.set_xlabel("mu", fontsize=10)
     ax.set_ylabel("eta", fontsize=10)
-    ax.set_title("Interaction: eta vs mu\n(structural mechanism)", fontsize=10, fontweight="bold")
+    ax.set_title("Interaction: eta vs mu", fontsize=10, fontweight="bold")
     cbar2 = plt.colorbar(im2, ax=ax, shrink=0.8)
     cbar2.set_label("I*2", fontsize=9)
     for i in range(len(eta_range)):
         for j in range(len(mu_range)):
             if not np.isnan(interaction_matrix_etamu[i, j]):
-                ax.text(j, i, f"{interaction_matrix_etamu[i,j]:.1f}", ha="center", va="center", fontsize=7, color="black")
+                ax.text(j, i, f"{interaction_matrix_etamu[i,j]:.1f}", ha="center", va="center", fontsize=7)
 
-    # Row 3, col 2: AUC comparison bar chart
-    ax = fig.add_subplot(gs[4, 2])
-    auc_labels = ['ASI\n(true)', 'ASI\n(surrogate)', 'Variance\n(N)', 'Autocorr\n(N)', 'CV\n(N)']
-    auc_values = [auc_asi_true, auc_asi_sur, auc_var, auc_autocorr, auc_cv]
-    colors = ['darkblue', 'steelblue', 'darkorange', 'seagreen', 'crimson']
-    bars = ax.bar(range(len(auc_labels)), auc_values, color=colors, alpha=0.8, edgecolor='black')
-    ax.set_xticks(range(len(auc_labels)))
-    ax.set_xticklabels(auc_labels, fontsize=8)
-    ax.set_ylabel("AUC", fontsize=9)
-    ax.set_title("Extinction Prediction Performance\n(AUC: higher = better)", fontsize=10, fontweight="bold")
-    ax.axhline(y=0.5, color='gray', linestyle='--', alpha=0.5, label='Random')
-    ax.axhline(y=0.8, color='green', linestyle=':', alpha=0.5, label='Good')
-    ax.set_ylim(0, 1.05)
-    ax.legend(fontsize=7)
-    ax.grid(True, alpha=0.3, axis='y')
-    for bar, val in zip(bars, auc_values):
-        if not np.isnan(val):
-            ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.02,
-                    f"{val:.3f}", ha='center', va='bottom', fontsize=8, fontweight='bold')
-
-    # Row 3, col 3: ASI_true vs proximity scatter
-    ax = fig.add_subplot(gs[4, 3])
-    valid_p = ~np.isnan(prox_subset) & ~np.isnan(asi_true_vals)
-    if np.sum(valid_p) > 10:
-        colors_scatter = ['red' if e else 'blue' for e in extinct_vals]
-        ax.scatter(prox_subset[valid_p], asi_true_vals[valid_p], c=[colors_scatter[i] for i in np.where(valid_p)[0]], alpha=0.5, s=20)
-        ax.set_xlabel("Proximity to tipping (I/I*2)", fontsize=9)
-        ax.set_ylabel("ASI (true)", fontsize=9)
-        ax.set_title("ASI vs Proximity to Tipping\n(red=extinct, blue=survived)", fontsize=10, fontweight="bold")
-        ax.grid(True, alpha=0.3)
-        ax.axvline(x=1.0, color='black', linestyle='--', alpha=0.5, label='I = I*2')
-        ax.legend(fontsize=7)
-
-    # Row 4: Summary text panel
-    ax = fig.add_subplot(gs[5, :])
-    ax.axis('off')
-    summary_text = f"""
-    COMPREHENSIVE SENSITIVITY ANALYSIS v4 — SUMMARY
-    {'='*70}
-    BASELINE:        I*1 = {baseline_I1:.2f} mg/L/hr  |  I*2 = {baseline_I2:.2f} mg/L/hr  |  Bistable range: [{baseline_I1:.2f}, {baseline_I2:.2f}]
-
-    GLOBAL SOBOL (I*2 sensitivity):
-    """
-    for name in names_sorted[:5]:
-        summary_text += f"      {name:<10} S1 = {max(S1[name],0):.4f}  |  ST = {max(ST[name],0):.4f}\n"
-
-    summary_text += f"""
-    UNCERTAINTY PROPAGATION (N={len(I2_samples)}):
-      I*2 = {np.mean(I2_samples):.2f} +/- {np.std(I2_samples):.2f} mg/L/hr  |  95% CI: [{np.percentile(I2_samples,2.5):.2f}, {np.percentile(I2_samples,97.5):.2f}]
-
-    VIRTUAL COHORT (N={N_COHORT}):
-      ASI_true vs ASI_surrogate corr: {corr_as:.3f}
-      AUC — ASI(true): {auc_asi_true:.3f}  |  ASI(surrogate): {auc_asi_sur:.3f}  |  Variance(N): {auc_var:.3f}
-      Extinction rate: {np.mean(extinct_vals)*100:.1f}%
-    """
-    ax.text(0.02, 0.98, summary_text, transform=ax.transAxes, fontsize=9,
-            verticalalignment='top', fontfamily='monospace',
-            bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.3))
-
-        # Row 5, col 0: Sobol S1 comparison — I*2 vs ASI
-    ax = fig.add_subplot(gs[5, 0])
-    names_sorted_asi = sorted(param_names, key=lambda n: S1_asi[n], reverse=True)
-    s1_asi_vals = [max(S1_asi[n], 0) for n in names_sorted_asi]
-    y_pos = np.arange(len(names_sorted_asi))
-    ax.barh(y_pos, s1_asi_vals, color='teal', alpha=0.8)
-    ax.set_yticks(y_pos)
-    ax.set_yticklabels(names_sorted_asi, fontsize=8)
-    ax.set_xlabel("S1 (ASI sensitivity)", fontsize=9)
-    ax.set_title(f"ASI Sobol S1\n(I={FIXED_I_ASI_SOBOL})", fontsize=10, fontweight="bold")
+    ax = fig.add_subplot(gs[3, 1])
+    names_sorted = sorted(param_names, key=lambda n: S1[n], reverse=True)
+    s1_vals = [max(S1[n], 0) for n in names_sorted]
+    s1_err_lo = [max(S1[n] - S1_conf[n][0], 0) for n in names_sorted]
+    s1_err_hi = [max(S1_conf[n][1] - S1[n], 0) for n in names_sorted]
+    y_pos = np.arange(len(names_sorted))
+    ax.barh(y_pos, s1_vals, xerr=[s1_err_lo, s1_err_hi], color='steelblue', alpha=0.8, capsize=3)
+    ax.set_yticks(y_pos); ax.set_yticklabels(names_sorted, fontsize=8)
+    ax.set_xlabel("S1", fontsize=9)
+    ax.set_title("Sobol S1 (I*2)", fontsize=10, fontweight="bold")
     ax.axvline(x=0, color='black', linewidth=0.5)
     ax.grid(True, alpha=0.3, axis='x')
     ax.invert_yaxis()
 
-    # Row 5, col 1: ASI uncertainty propagation at fixed I levels
-    ax = fig.add_subplot(gs[5, 1])
+    ax = fig.add_subplot(gs[3, 2])
+    st_vals = [max(ST[n], 0) for n in names_sorted]
+    st_err_lo = [max(ST[n] - ST_conf[n][0], 0) for n in names_sorted]
+    st_err_hi = [max(ST_conf[n][1] - ST[n], 0) for n in names_sorted]
+    ax.barh(y_pos, st_vals, xerr=[st_err_lo, st_err_hi], color='darkorange', alpha=0.8, capsize=3)
+    ax.set_yticks(y_pos); ax.set_yticklabels(names_sorted, fontsize=8)
+    ax.set_xlabel("ST", fontsize=9)
+    ax.set_title("Sobol ST (I*2)", fontsize=10, fontweight="bold")
+    ax.axvline(x=0, color='black', linewidth=0.5)
+    ax.grid(True, alpha=0.3, axis='x')
+    ax.invert_yaxis()
+
+    ax = fig.add_subplot(gs[3, 3])
+    if len(I2_samples) > 0:
+        ax.hist(I2_samples, bins=30, color='seagreen', alpha=0.7, edgecolor='black')
+        ax.axvline(x=np.mean(I2_samples), color='darkred', linestyle='--', linewidth=2, label=f"Mean: {np.mean(I2_samples):.2f}")
+        ax.axvline(x=np.median(I2_samples), color='navy', linestyle=':', linewidth=2, label=f"Median: {np.median(I2_samples):.2f}")
+        ax.axvline(x=baseline_I2, color='crimson', linestyle='-', linewidth=2, label=f"Baseline: {baseline_I2:.2f}")
+        ax.set_xlabel("I*2 (mg/L/hr)", fontsize=9)
+        ax.set_ylabel("Frequency", fontsize=9)
+        ax.set_title(f"MC Uncertainty (N={len(I2_samples)})", fontsize=10, fontweight="bold")
+        ax.legend(fontsize=7)
+        ax.grid(True, alpha=0.3)
+
+    # Row 4: Sobol ASI + ASI uncertainty + stratified AUC
+    ax = fig.add_subplot(gs[4, 0])
+    names_sorted_asi = sorted(param_names, key=lambda n: S1_asi[n], reverse=True)
+    s1_asi_vals = [max(S1_asi[n], 0) for n in names_sorted_asi]
+    y_pos_asi = np.arange(len(names_sorted_asi))
+    ax.barh(y_pos_asi, s1_asi_vals, color='teal', alpha=0.8)
+    ax.set_yticks(y_pos_asi); ax.set_yticklabels(names_sorted_asi, fontsize=8)
+    ax.set_xlabel("S1 (ASI)", fontsize=9)
+    ax.set_title(f"Sobol S1 (ASI, I={FIXED_I_ASI_SOBOL})", fontsize=10, fontweight="bold")
+    ax.axvline(x=0, color='black', linewidth=0.5)
+    ax.grid(True, alpha=0.3, axis='x')
+    ax.invert_yaxis()
+
+    ax = fig.add_subplot(gs[4, 1])
     colors_asi = ['steelblue', 'darkorange', 'seagreen']
     for idx, (I_test, asi_samples) in enumerate(asi_uncertainty_results.items()):
         if len(asi_samples) > 0:
             ax.hist(asi_samples, bins=25, alpha=0.5, color=colors_asi[idx], 
                     label=f"I={I_test:.0f}: μ={np.mean(asi_samples):.3f}", edgecolor='black')
-    ax.set_xlabel("ASI value", fontsize=9)
+    ax.set_xlabel("ASI", fontsize=9)
     ax.set_ylabel("Frequency", fontsize=9)
-    ax.set_title("ASI Uncertainty Propagation\n(at fixed I)", fontsize=10, fontweight="bold")
+    ax.set_title("ASI Uncertainty (fixed I)", fontsize=10, fontweight="bold")
     ax.legend(fontsize=7)
     ax.grid(True, alpha=0.3)
 
-    # Row 5, col 2: Stratified AUC heatmap
-    ax = fig.add_subplot(gs[5, 2])
+    ax = fig.add_subplot(gs[4, 2])
     strat_auc_matrix = np.full((2, 2), np.nan)
     for name, subset in strata.items():
-        if 'Low_eta_Low_MIC' in name: i, j = 0, 0
-        elif 'Low_eta_High_MIC' in name: i, j = 0, 1
-        elif 'High_eta_Low_MIC' in name: i, j = 1, 0
+        if 'Low_η_Low_MIC' in name: i, j = 0, 0
+        elif 'Low_η_High_MIC' in name: i, j = 0, 1
+        elif 'High_η_Low_MIC' in name: i, j = 1, 0
         else: i, j = 1, 1
-        
+
         if len(subset) >= 10:
+            from sklearn.metrics import roc_auc_score
             asi_vals = np.array([r['asi_true'] for r in subset])
             ext_vals = np.array([r['extinct'] for r in subset])
             valid_auc = ~np.isnan(asi_vals)
             if np.sum(valid_auc) >= 10 and len(np.unique(ext_vals[valid_auc])) >= 2:
-                strat_auc_matrix[i, j] = safe_auc(ext_vals, asi_vals)
-    
+                strat_auc_matrix[i, j] = roc_auc_score(ext_vals[valid_auc], asi_vals[valid_auc])
+
     im_strat = ax.imshow(strat_auc_matrix, cmap="RdYlGn", aspect="auto", vmin=0, vmax=1)
     ax.set_xticks([0, 1])
     ax.set_xticklabels(['Low MIC_S', 'High MIC_S'], fontsize=8)
     ax.set_yticks([0, 1])
     ax.set_yticklabels(['Low η', 'High η'], fontsize=8)
     ax.set_xlabel("MIC_S", fontsize=10)
-    ax.set_ylabel("eta", fontsize=10)
-    ax.set_title("Stratified AUC\n(ASI vs extinction)", fontsize=10, fontweight="bold")
+    ax.set_ylabel("η", fontsize=10)
+    ax.set_title("Stratified AUC (ASI vs extinction)", fontsize=10, fontweight="bold")
     cbar_strat = plt.colorbar(im_strat, ax=ax, shrink=0.8)
     cbar_strat.set_label("AUC", fontsize=9)
     for i in range(2):
@@ -1410,176 +925,62 @@ def main():
                 ax.text(j, i, f"{strat_auc_matrix[i,j]:.2f}", ha="center", va="center", 
                         fontsize=10, fontweight='bold', color="white" if strat_auc_matrix[i,j] < 0.5 else "black")
 
-    # Row 5, col 3: ASI component vs classical EWS correlation heatmap
-    ax = fig.add_subplot(gs[5, 3])
-    comp_names_short = ['spectral', 'dpdt', 'fit_diff', 'curvature', 'asi_true']
-    ews_names_short = ['var_N', 'autocorr_N', 'cv_N', 'var_p', 'skew_N']
-    
-    corr_mat = np.full((len(comp_names_short), len(ews_names_short)), np.nan)
-    for ci, (comp_name, comp_vals) in enumerate(asi_components.items()):
-        for ei, (ews_name, ews_vals) in enumerate(classical_vars.items()):
-            valid_both = ~np.isnan(comp_vals) & ~np.isnan(ews_vals)
-            if np.sum(valid_both) >= 10:
-                corr_mat[ci, ei] = np.corrcoef(comp_vals[valid_both], ews_vals[valid_both])[0,1]
-    
-    im_corr = ax.imshow(corr_mat, cmap="RdBu_r", aspect="auto", vmin=-1, vmax=1)
-    ax.set_xticks(range(len(ews_names_short)))
-    ax.set_xticklabels(ews_names_short, fontsize=7, rotation=45, ha='right')
-    ax.set_yticks(range(len(comp_names_short)))
-    ax.set_yticklabels(comp_names_short, fontsize=7)
-    ax.set_title("ASI Components vs\nClassical EWS (r)", fontsize=10, fontweight="bold")
-    cbar_corr = plt.colorbar(im_corr, ax=ax, shrink=0.8)
-    cbar_corr.set_label("Pearson r", fontsize=9)
-    for i in range(len(comp_names_short)):
-        for j in range(len(ews_names_short)):
-            if not np.isnan(corr_mat[i, j]):
-                ax.text(j, i, f"{corr_mat[i,j]:.2f}", ha="center", va="center", fontsize=7, 
-                        color="white" if abs(corr_mat[i,j]) > 0.5 else "black")
-
-    # Row 6, col 0: ASI vs proximity scatter colored by eta
-    ax = fig.add_subplot(gs[6, 0])
-    eta_cohort = np.array([r['eta'] for r in cohort_with_params])
-    valid_p2 = ~np.isnan(prox_subset) & ~np.isnan(asi_true_vals)
-    if np.sum(valid_p2) > 10:
-        scatter = ax.scatter(prox_subset[valid_p2], asi_true_vals[valid_p2], 
-                            c=np.log10(eta_cohort[valid_p2]), cmap='viridis', alpha=0.6, s=20)
-        ax.set_xlabel("Proximity (I/I*2)", fontsize=9)
-        ax.set_ylabel("ASI (true)", fontsize=9)
-        ax.set_title("ASI vs Proximity\n(colored by log10 η)", fontsize=10, fontweight="bold")
-        ax.grid(True, alpha=0.3)
-        ax.axvline(x=1.0, color='black', linestyle='--', alpha=0.5)
-        plt.colorbar(scatter, ax=ax, shrink=0.8, label='log10(η)')
-
-    # Row 6, col 1: ASI distribution by extinction status
-    ax = fig.add_subplot(gs[6, 1])
-    asi_extinct = asi_true_vals[extinct_vals]
-    asi_survived = asi_true_vals[~extinct_vals]
-    ax.hist(asi_survived, bins=20, alpha=0.6, color='blue', label=f'Survived (n={np.sum(~extinct_vals)})', edgecolor='black')
-    ax.hist(asi_extinct, bins=20, alpha=0.6, color='red', label=f'Extinct (n={np.sum(extinct_vals)})', edgecolor='black')
-    ax.set_xlabel("ASI (true)", fontsize=9)
-    ax.set_ylabel("Frequency", fontsize=9)
-    ax.set_title("ASI Distribution by Outcome", fontsize=10, fontweight="bold")
-    ax.legend(fontsize=8)
-    ax.grid(True, alpha=0.3)
-
-    # Row 6, col 2: Proximity distribution by extinction status
-    ax = fig.add_subplot(gs[6, 2])
-    prox_extinct = prox_subset[extinct_vals & ~np.isnan(prox_subset)]
-    prox_survived = prox_subset[~extinct_vals & ~np.isnan(prox_subset)]
-    ax.hist(prox_survived, bins=20, alpha=0.6, color='blue', label='Survived', edgecolor='black')
-    ax.hist(prox_extinct, bins=20, alpha=0.6, color='red', label='Extinct', edgecolor='black')
-    ax.set_xlabel("Proximity (I/I*2)", fontsize=9)
-    ax.set_ylabel("Frequency", fontsize=9)
-    ax.set_title("Proximity Distribution\nby Outcome", fontsize=10, fontweight="bold")
-    ax.axvline(x=1.0, color='black', linestyle='--', alpha=0.5, label='Tipping point')
-    ax.legend(fontsize=8)
-    ax.grid(True, alpha=0.3)
-
-    # Row 6, col 3: Summary of new findings text
-    ax = fig.add_subplot(gs[6, 3])
+    # Row 5: Summary text
+    ax = fig.add_subplot(gs[5, :])
     ax.axis('off')
-    
-    # Safe access to ASI uncertainty results
+
     asi_5 = asi_uncertainty_results.get(5.0, np.array([]))
     asi_10 = asi_uncertainty_results.get(10.0, np.array([]))
     asi_15 = asi_uncertainty_results.get(15.0, np.array([]))
-    
-    mean_5 = np.mean(asi_5) if len(asi_5) > 0 else np.nan
-    std_5 = np.std(asi_5) if len(asi_5) > 0 else np.nan
     mean_10 = np.mean(asi_10) if len(asi_10) > 0 else np.nan
     std_10 = np.std(asi_10) if len(asi_10) > 0 else np.nan
-    mean_15 = np.mean(asi_15) if len(asi_15) > 0 else np.nan
-    std_15 = np.std(asi_15) if len(asi_15) > 0 else np.nan
-    
     best_auc = np.nanmax(strat_auc_matrix) if not np.all(np.isnan(strat_auc_matrix)) else np.nan
     worst_auc = np.nanmin(strat_auc_matrix) if not np.all(np.isnan(strat_auc_matrix)) else np.nan
-    
-    new_findings_text = f"""NEW ANALYSES [7-10]
-{'='*50}
-ASI SOBOL (I={FIXED_I_ASI_SOBOL:.0f}):
-  Top S1: {names_sorted_asi[0]}={max(S1_asi[names_sorted_asi[0]],0):.3f}
-  
-ASI UNCERTAINTY:
-  I=5:  ASI={mean_5:.3f}±{std_5:.3f}
-  I=10: ASI={mean_10:.3f}±{std_10:.3f}
-  I=15: ASI={mean_15:.3f}±{std_15:.3f}
 
-STRATIFIED AUC:
-  Best: {best_auc:.3f}
-  Worst: {worst_auc:.3f}
-
-COMPONENT CORRELATIONS:
-  Strongest: see heatmap
-    """
-    ax.text(0.05, 0.95, new_findings_text, transform=ax.transAxes, fontsize=8,
-            verticalalignment='top', fontfamily='monospace',
-            bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.5))
-
-    # Row 7: Full summary text panel
-    ax = fig.add_subplot(gs[7, :])
-    ax.axis('off')
-    
     summary_text = f"""
-    COMPREHENSIVE SENSITIVITY ANALYSIS v4 — SUMMARY
-    {'='*70}
-    BASELINE:        I*1 = {baseline_I1:.2f} mg/L/hr  |  I*2 = {baseline_I2:.2f} mg/L/hr  |  Bistable range: [{baseline_I1:.2f}, {baseline_I2:.2f}]
+COMPREHENSIVE SENSITIVITY ANALYSIS v4-lean — SUMMARY
+{'='*70}
+BASELINE:  I*1 = {baseline_I1:.2f} mg/L/hr  |  I*2 = {baseline_I2:.2f} mg/L/hr  |  Range: [{baseline_I1:.2f}, {baseline_I2:.2f}]
 
-    GLOBAL SOBOL (I*2 location):
-    """
+GLOBAL SOBOL (I*2 location):
+"""
     for name in names_sorted[:5]:
-        summary_text += f"      {name:<10} S1 = {max(S1[name],0):.4f}  |  ST = {max(ST[name],0):.4f}\n"
+        summary_text += f"  {name:<10} S1 = {max(S1[name],0):.4f}  |  ST = {max(ST[name],0):.4f}\n"
 
-    summary_text += f"""
-    GLOBAL SOBOL (ASI magnitude at I={FIXED_I_ASI_SOBOL:.0f}):
-    """
+    summary_text += f"\nGLOBAL SOBOL (ASI at I={FIXED_I_ASI_SOBOL:.0f}):\n"
     for name in names_sorted_asi[:5]:
-        summary_text += f"      {name:<10} S1 = {max(S1_asi[name],0):.4f}  |  ST = {max(ST_asi[name],0):.4f}\n"
+        summary_text += f"  {name:<10} S1 = {max(S1_asi[name],0):.4f}  |  ST = {max(ST_asi[name],0):.4f}\n"
 
     summary_text += f"""
-    UNCERTAINTY PROPAGATION (N={len(I2_samples)}):
-      I*2 = {np.mean(I2_samples):.2f} +/- {np.std(I2_samples):.2f} mg/L/hr  |  95% CI: [{np.percentile(I2_samples,2.5):.2f}, {np.percentile(I2_samples,97.5):.2f}]
-      ASI at I=10 = {mean_10:.3f} +/- {std_10:.3f}
+UNCERTAINTY PROPAGATION (N={len(I2_samples)}):
+  I*2 = {np.mean(I2_samples):.2f} +/- {np.std(I2_samples):.2f}  |  95% CI: [{np.percentile(I2_samples,2.5):.2f}, {np.percentile(I2_samples,97.5):.2f}]
 
-    VIRTUAL COHORT (N={N_COHORT}):
-      ASI_true vs ASI_surrogate corr: {corr_as:.3f}
-      AUC — ASI(true): {auc_asi_true:.3f}  |  ASI(surrogate): {auc_asi_sur:.3f}  |  Variance(N): {auc_var:.3f}
-      Stratified AUC range: [{worst_auc:.3f}, {best_auc:.3f}]
-      Extinction rate: {np.mean(extinct_vals)*100:.1f}%
-    """
+ASI UNCERTAINTY (I=10):  {mean_10:.3f} +/- {std_10:.3f}
+
+STRATIFIED AUC:  Best = {best_auc:.3f}  |  Worst = {worst_auc:.3f}
+  -> ASI validity is regime-dependent (see heatmap above)
+"""
     ax.text(0.02, 0.98, summary_text, transform=ax.transAxes, fontsize=9,
             verticalalignment='top', fontfamily='monospace',
             bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.3))
 
-    plt.suptitle("Comprehensive Parameter Sensitivity Analysis v4 — Global + Uncertainty + ASI",
-                 fontsize=14, fontweight="bold", y=0.98)
+    plt.suptitle("Parameter Sensitivity Analysis v4-lean — Structural + Regime", fontsize=14, fontweight="bold", y=0.98)
     plt.tight_layout()
-    plt.savefig("comprehensive_sensitivity_v4.png", dpi=300, bbox_inches="tight")
+    plt.savefig("comprehensive_sensitivity_v4_lean.png", dpi=300, bbox_inches="tight")
     plt.show()
-    print("Figure saved to comprehensive_sensitivity_v4.png")
+    print("\nFigure saved to comprehensive_sensitivity_v4_lean.png")
 
-    # -------------------------------------------------------------------------
-    # FINAL SUMMARY TABLE (console output)
-    # -------------------------------------------------------------------------
     print("\n" + "="*80)
-    print("FINAL SUMMARY TABLE")
+    print("FINAL SUMMARY")
     print("="*80)
-    print(f"{'Analysis':<<30} {'Result':<<50}")
-    print("-"*80)
-    print(f"{'Baseline I*2':<<30} {f'{baseline_I2:.3f} mg/L/hr':<<50}")
-    print(f"{'Baseline I*1':<<30} {f'{baseline_I1:.3f} mg/L/hr':<<50}")
-    print(f"{'Bistable range':<<30} {f'[{baseline_I1:.2f}, {baseline_I2:.2f}]':<<50}")
-    print(f"{'Global Sobol (top S1)':<<30} {f'{names_sorted[0]} = {max(S1[names_sorted[0]],0):.4f}':<<50}")
-    print(f"{'Uncertainty I*2 (mean)':<<30} {f'{np.mean(I2_samples):.3f} +/- {np.std(I2_samples):.3f}':<<50}")
-    print(f"{'Uncertainty I*2 (95% CI)':<<30} {f'[{np.percentile(I2_samples,2.5):.3f}, {np.percentile(I2_samples,97.5):.3f}]':<<50}")
-    print(f"{'ASI vs surrogate corr':<<30} {f'{corr_as:.4f}':<<50}")
-    print(f"{'AUC ASI(true)':<<30} {f'{auc_asi_true:.4f}':<<50}")
-    print(f"{'AUC ASI(surrogate)':<<30} {f'{auc_asi_sur:.4f}':<<50}")
-    print(f"{'AUC Variance(N)':<<30} {f'{auc_var:.4f}':<<50}")
+    print(f"Baseline I*2:       {baseline_I2:.3f} mg/L/hr")
+    print(f"Baseline I*1:       {baseline_I1:.3f} mg/L/hr")
+    print(f"Bistable range:     [{baseline_I1:.2f}, {baseline_I2:.2f}]")
+    print(f"Top Sobol S1:       {names_sorted[0]} = {max(S1[names_sorted[0]],0):.4f}")
+    print(f"Uncertainty I*2:    {np.mean(I2_samples):.3f} +/- {np.std(I2_samples):.3f}")
+    print(f"Uncertainty 95% CI: [{np.percentile(I2_samples,2.5):.3f}, {np.percentile(I2_samples,97.5):.3f}]")
+    print(f"Stratified AUC:     [{worst_auc:.3f}, {best_auc:.3f}]")
     print("="*80)
-    print("\nAll analyses complete. Files saved:")
-    print("  - comprehensive_sensitivity_v4.png")
-    print("  - sobol_results_v4.pkl")
-    print("  - cohort_results_v4.pkl")
 
 
 if __name__ == "__main__":
